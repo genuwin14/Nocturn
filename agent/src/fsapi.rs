@@ -97,18 +97,27 @@ fn err(status: StatusCode, message: impl Into<String>) -> ApiError {
 /// case the parent directory is canonicalized instead and must already be
 /// inside the root.
 fn resolve(root: &Path, requested: &str, must_exist: bool) -> Result<PathBuf, ApiError> {
-    // Strip any leading separator so an absolute-looking path is still read as
-    // relative to the root rather than replacing it on join.
-    let requested = requested.trim_start_matches(['/', '\\']);
-
-    // Reject Windows drive prefixes and UNC roots up front: `Path::join` would
-    // otherwise discard the root entirely.
     let candidate = Path::new(requested);
+
+    // Reject anything absolute before touching it. This has to run first and
+    // has to test components rather than `is_absolute`, for two reasons:
+    //
+    // - Stripping leading separators first would make the check unreachable on
+    //   Unix, silently reinterpreting `/etc/passwd` as `<root>/etc/passwd`. Safe,
+    //   but it answers a different question than the caller asked, and it made
+    //   the same input behave differently on Linux and Windows.
+    // - `Path::is_absolute` is false for `/foo` on Windows, since that form has
+    //   no drive prefix. `RootDir` catches it on both platforms.
+    //
+    // `Path::join` would discard the root entirely for any of these.
     if candidate
         .components()
         .any(|c| matches!(c, Component::Prefix(_) | Component::RootDir))
     {
-        return Err(err(StatusCode::BAD_REQUEST, "absolute paths are not allowed"));
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "paths must be relative to the project root",
+        ));
     }
 
     let joined = root.join(candidate);
@@ -290,12 +299,21 @@ mod tests {
         assert!(resolve(&root, "a/../../../etc/passwd", false).is_err());
     }
 
+    /// Absolute paths must be refused identically on every platform, and with
+    /// 400 rather than 404 — the request is malformed, not merely missing.
     #[test]
     fn absolute_paths_are_rejected() {
         let root = root();
-        assert!(resolve(&root, "/etc/passwd", false).is_err());
-        assert!(resolve(&root, "C:\\Windows\\System32", false).is_err());
-        assert!(resolve(&root, "\\\\server\\share", false).is_err());
+        for input in [
+            "/etc/passwd",
+            "C:\\Windows\\System32",
+            "C:/Windows/System32",
+            "\\\\server\\share",
+            "\\Windows",
+        ] {
+            let (status, _) = resolve(&root, input, false).expect_err(input);
+            assert_eq!(status, StatusCode::BAD_REQUEST, "wrong status for {input}");
+        }
     }
 
     #[test]

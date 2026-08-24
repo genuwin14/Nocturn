@@ -42,6 +42,20 @@ A Cloudflare Tunnel gets you the same property if you would rather stay on
 Cloudflare. Either is fine; the requirement is only that the connection is
 outbound.
 
+## What has and has not been verified
+
+`./deploy/tests/verify-install.sh` runs `install.sh` inside a throwaway Debian
+container and asserts what it produced: 24 checks covering the service account,
+file modes, the generated token, the unit file, and idempotence on a second run.
+The cross-built binary is launched there too, so the Linux PTY path is exercised
+rather than assumed.
+
+systemd itself is stubbed in that test — running real systemd in a container
+needs `--privileged` and cgroup mounts and is flaky across Docker backends. So
+everything the installer does *around* systemd is verified, and the actual
+`enable --now` is only recorded, not performed. **The first run against a real VM
+is still a first run.** Have a console open.
+
 ## What the installer does
 
 - Creates an unprivileged `nocturn` system user. A Nocturn token is equivalent

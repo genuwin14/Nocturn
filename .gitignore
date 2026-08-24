@@ -9,3 +9,6 @@ agent.token
 .DS_Store
 Thumbs.db
 web/tests/shots/
+
+# Cross-build output (4 MB binary; rebuild with deploy/build-linux.sh)
+agent/nocturn-agent-linux

@@ -1,9 +1,45 @@
 // End-to-end check of the one property Nocturn is built on:
 // a session keeps running, and keeps buffering output, with no client attached.
+//
+// Runs against either platform's daemon. Override with environment variables:
+//   NOCTURN_TEST_URL    default http://127.0.0.1:7071
+//   NOCTURN_TEST_TOKEN  default test-token-abc123
+//   NOCTURN_TEST_SHELL  "posix" or "powershell"; defaults to the host platform,
+//                       so set it explicitly when testing a Linux daemon from
+//                       Windows or vice versa.
 
-const BASE = 'http://127.0.0.1:7071';
-const WS = 'ws://127.0.0.1:7071';
-const TOKEN = 'test-token-abc123';
+const BASE = (process.env.NOCTURN_TEST_URL ?? 'http://127.0.0.1:7071').replace(/\/+$/, '');
+const WS = BASE.replace(/^http/, 'ws');
+const TOKEN = process.env.NOCTURN_TEST_TOKEN ?? 'test-token-abc123';
+const SHELL =
+  process.env.NOCTURN_TEST_SHELL ?? (process.platform === 'win32' ? 'powershell' : 'posix');
+
+// Per-shell details. Everything else in this file is platform independent.
+const DIALECT = {
+  powershell: {
+    // PowerShell takes a second or two to reach a prompt.
+    warmupMs: 2500,
+    ticks: '1..10 | %{ "TICK$_"; Start-Sleep -Milliseconds 700 }',
+    traversal: '../../../../Windows/win.ini',
+    absolute: 'C:/Windows/win.ini',
+    // PSReadLine asks for the cursor position at startup and blocks until a
+    // terminal answers. Bash's line editor does not, so this is only asserted
+    // where a shell actually emits it.
+    expectsDsr: true,
+  },
+  posix: {
+    warmupMs: 1000,
+    ticks: 'for i in 1 2 3 4 5 6 7 8 9 10; do echo TICK$i; sleep 0.7; done',
+    traversal: '../../../../etc/passwd',
+    absolute: '/etc/passwd',
+    expectsDsr: false,
+  },
+}[SHELL];
+
+if (!DIALECT) {
+  console.error(`unknown NOCTURN_TEST_SHELL: ${SHELL} (expected "posix" or "powershell")`);
+  process.exit(2);
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
@@ -54,6 +90,8 @@ function attach(session, holdMs, onOpen) {
 const send = (ws, s) => ws.send(new TextEncoder().encode(s));
 
 async function main() {
+  console.log(`target ${BASE}  shell ${SHELL}\n`);
+
   // --- health, unauthenticated ---
   const health = await fetch(`${BASE}/health`).then((r) => r.json());
   check('health responds without a token', health.status === 'ok', `v${health.version}`);
@@ -74,15 +112,17 @@ async function main() {
 
   // --- the persistence test ---
   // Start a counter that ticks for ~7s, then detach while it is still running.
-  // PowerShell takes a second or two to reach its prompt, so warm up first.
-  const first = await attach('persist', 4500, async (ws) => {
-    await sleep(2500);
-    send(ws, '1..10 | %{ "TICK$_"; Start-Sleep -Milliseconds 700 }\r');
+  const first = await attach('persist', DIALECT.warmupMs + 2000, async (ws) => {
+    await sleep(DIALECT.warmupMs);
+    send(ws, `${DIALECT.ticks}\r`);
   });
-  check('shell answered the startup DSR query', first.dsrAnswered > 0,
-    `${first.dsrAnswered} answered`);
-  const sawEarly = /TICK1/.test(first.text);
-  check('first client sees live output', sawEarly, `${first.text.length} bytes`);
+  if (DIALECT.expectsDsr) {
+    check('shell answered the startup DSR query', first.dsrAnswered > 0,
+      `${first.dsrAnswered} answered`);
+  } else {
+    console.log(`SKIP  startup DSR query — ${SHELL} shells do not emit one`);
+  }
+  check('first client sees live output', /TICK1/.test(first.text), `${first.text.length} bytes`);
   check('ready frame sent on attach', first.ready !== null,
     first.ready ? `session=${first.ready.session} alive=${first.ready.alive}` : '');
 
@@ -129,12 +169,19 @@ async function main() {
   check('written file reads back correctly', readBack.content === 'written by nocturn');
 
   // --- path confinement ---
-  const escape = await fetch(`${BASE}/api/fs/read?path=../../../../Windows/win.ini`, { headers: auth });
+  const escape = await fetch(
+    `${BASE}/api/fs/read?path=${encodeURIComponent(DIALECT.traversal)}`, { headers: auth });
   check('traversal outside root is refused', escape.status === 403 || escape.status === 404,
     `got ${escape.status}`);
 
-  const absolute = await fetch(`${BASE}/api/fs/read?path=C:/Windows/win.ini`, { headers: auth });
-  check('absolute path is refused', absolute.status === 400, `got ${absolute.status}`);
+  // Rejected the same way on every platform, and as 400 rather than 404: the
+  // request is malformed, not merely pointing at something absent.
+  const absolute = await fetch(
+    `${BASE}/api/fs/read?path=${encodeURIComponent(DIALECT.absolute)}`, { headers: auth });
+  const absoluteBody = await absolute.text();
+  check('absolute path is refused with 400', absolute.status === 400, `got ${absolute.status}`);
+  check('absolute path did not leak host file contents',
+    !absoluteBody.includes('root:x:0:0') && !absoluteBody.includes('[fonts]'));
 
   // --- delete ---
   const deleted = await fetch(`${BASE}/api/sessions/persist`, { method: 'DELETE', headers: auth });

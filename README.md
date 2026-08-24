@@ -35,7 +35,7 @@ that unlocks your infrastructure.
 |---|---|
 | `agent/` — Rust daemon: persistent PTY sessions, file API, token auth | **working, tested** |
 | `web/` — React + xterm.js client, mobile-first | **working, tested** |
-| `deploy/` — systemd unit, installer, Tailscale runbook | **written, not yet run on a real VM** |
+| `deploy/` — systemd unit, installer, Tailscale runbook | **verified in a container; not yet run on a real VM** |
 | `desktop/` — Tauri v2 shell | not started |
 | `mobile/` — Tauri v2 mobile or React Native | not started |
 | Landing page | not started |
@@ -197,13 +197,16 @@ infrastructure on behalf of other people.
 ## Tests
 
 ```bash
-cd agent && cargo test              # path confinement, token comparison
-node agent/tests/e2e.mjs            # daemon over the wire, 19 checks
-cd web && npm run test:browser      # the client in headless Chrome, 10 checks
+cd agent && cargo test                  # path confinement, token comparison — 5
+node agent/tests/e2e.mjs                # daemon over the wire — 19
+cd web && npm run test:browser          # the client in headless Chrome — 10
+./deploy/tests/verify-install.sh        # installer in a container — 24
 ```
 
-Both wire-level suites need a daemon running with a known token; see
-[agent/tests/README.md](agent/tests/README.md).
+The wire-level suites need a daemon running with a known token; see
+[agent/tests/README.md](agent/tests/README.md), which also covers running the
+Linux build in a container so the PTY path that will actually be deployed gets
+exercised, not just the Windows one.
 
 The check that matters most is session persistence: start a counter, detach,
 wait, reattach, and confirm the ticks emitted while nothing was listening are
