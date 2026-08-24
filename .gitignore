@@ -1,0 +1,11 @@
+target/
+node_modules/
+dist/
+build/
+.env
+.env.local
+*.token
+agent.token
+.DS_Store
+Thumbs.db
+web/tests/shots/

@@ -1,0 +1,38 @@
+[Unit]
+Description=Nocturn agent - persistent remote terminal and file daemon
+Documentation=https://github.com/athenanetworks/nocturn
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=nocturn
+Group=nocturn
+
+# The token lives here, not in the unit file, so it never lands in
+# `systemctl cat` output or a git-tracked config. chmod 600, owned by nocturn.
+EnvironmentFile=/etc/nocturn/agent.env
+
+ExecStart=/usr/local/bin/nocturn-agent
+WorkingDirectory=/srv/projects
+
+Restart=always
+RestartSec=2
+
+# Shells are children of this unit. Without this, `systemctl restart` orphans
+# every running session instead of cleaning them up.
+KillMode=control-group
+TimeoutStopSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nocturn-agent
+
+# Deliberately minimal hardening. This daemon exists to run arbitrary commands
+# on your behalf, so ProtectHome, ReadOnlyPaths, SystemCallFilter and friends
+# would break the shells it spawns. The isolation boundary for Nocturn is the
+# VM and the unprivileged user it runs as, not systemd sandboxing.
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
