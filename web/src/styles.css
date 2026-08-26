@@ -1,3 +1,30 @@
+/*
+  Oswald, self-hosted. The app makes no other external request, and it is meant
+  to be reached over a tailnet where the client may have no route to the public
+  internet at all — so a Google Fonts <link> would be the one thing able to
+  break the UI on a network where everything else works.
+
+  Latin subset of the variable font, 28 KB. `swap` so text is readable in the
+  fallback immediately rather than invisible while 28 KB arrives over a phone
+  connection.
+*/
+@font-face {
+  font-family: 'Oswald';
+  font-style: normal;
+  font-weight: 200 700;
+  font-display: swap;
+  /*
+    Relative, and under src/ rather than public/, so Vite fingerprints it and
+    rewrites this URL against the configured base. An absolute /fonts/… would
+    resolve to the host root and 404 wherever a tunnel mounts the client under
+    a subpath — the case base: './' exists to support.
+  */
+  src: url('./fonts/oswald-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 :root {
   /* Overwritten from JS with window.visualViewport.height so the layout tracks
      what is actually visible when the on-screen keyboard is open. */
@@ -34,9 +61,18 @@ body,
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    sans-serif;
-  font-size: 15px;
+  /*
+    Oswald is condensed, so it sets narrower and shorter than the system stack
+    it replaces. The size bump keeps tap targets and label legibility where
+    they were rather than letting everything quietly shrink.
+
+    The system stack stays behind it as the fallback, which is what renders
+    for the first moments of a cold load and for any glyph outside the latin
+    subset.
+  */
+  font-family: 'Oswald', ui-sans-serif, -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
   -webkit-font-smoothing: antialiased;
   /* Stops the whole page bouncing when a swipe reaches the end of the terminal. */
   overscroll-behavior: none;
