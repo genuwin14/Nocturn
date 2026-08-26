@@ -95,9 +95,15 @@ async fn main() -> Result<()> {
     };
 
     let shell = resolve_shell(args.shell);
+
+    // Shells start in the drive-letter form, not the canonical one. See
+    // `friendly_path`: the two are the same directory, and the difference is
+    // only ever visible to a person.
+    let shell_root = friendly_path(&root);
+
     let sessions = Arc::new(SessionManager::new(
         shell.clone(),
-        root.clone(),
+        shell_root.clone(),
         !args.allow_api_key,
     ));
 
@@ -148,7 +154,7 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("failed to bind {}", args.bind))?;
 
-    print_banner(&args.bind, &root, &shell, &token, args.allow_api_key);
+    print_banner(&args.bind, &shell_root, &shell, &token, args.allow_api_key);
 
     axum::serve(
         listener,
@@ -186,6 +192,43 @@ async fn delete_session(
     } else {
         axum::http::StatusCode::NOT_FOUND
     }
+}
+
+/// Strips Windows' extended-length `\\?\` prefix for display and for the
+/// shell's working directory.
+///
+/// `canonicalize` returns verbatim paths on Windows. That form is what path
+/// confinement needs — it is what `canonicalize` produces for every candidate
+/// path, so the root must be in the same form for `starts_with` to mean
+/// anything — but it leaks anywhere a person can see it. PowerShell cannot map
+/// `\\?\C:\Nocturn` back to a drive, so it renders its prompt provider-
+/// qualified: `PS Microsoft.PowerShell.Core\FileSystem::\\?\C:\Nocturn>`.
+///
+/// So the canonical root stays canonical for `AppState`, and this form is used
+/// for the banner and for spawning shells. Same directory either way.
+fn friendly_path(path: &PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        return path.clone();
+    }
+
+    let text = path.to_string_lossy();
+
+    // A verbatim UNC path becomes an ordinary one: \\?\UNC\host\share.
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        // Only when a drive letter follows. Verbatim device paths without one
+        // have no shorter equivalent, and stripping the prefix would name
+        // something else entirely.
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+            return PathBuf::from(rest);
+        }
+    }
+
+    path.clone()
 }
 
 /// Picks the shell to spawn, honouring an explicit override first.
@@ -288,4 +331,44 @@ fn print_banner(bind: &SocketAddr, root: &std::path::Path, shell: &[String], tok
     println!("  attach:     ws://{bind}/ws/terminal?session=main");
     println!("  health:     curl http://{bind}/health");
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn friendly_path_strips_the_verbatim_prefix() {
+        // The case that produced a provider-qualified PowerShell prompt.
+        let verbatim = PathBuf::from(r"\\?\C:\Nocturn");
+        let expected = if cfg!(windows) { r"C:\Nocturn" } else { r"\\?\C:\Nocturn" };
+        assert_eq!(friendly_path(&verbatim), PathBuf::from(expected));
+    }
+
+    #[test]
+    fn friendly_path_leaves_ordinary_paths_alone() {
+        let plain = PathBuf::from(r"C:\Nocturn");
+        assert_eq!(friendly_path(&plain), plain);
+
+        let unix = PathBuf::from("/srv/projects");
+        assert_eq!(friendly_path(&unix), unix);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn friendly_path_shortens_a_verbatim_unc_path() {
+        assert_eq!(
+            friendly_path(&PathBuf::from(r"\\?\UNC\host\share\proj")),
+            PathBuf::from(r"\\host\share\proj")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn friendly_path_keeps_device_paths_that_have_no_drive() {
+        // No drive letter, so there is no shorter form; stripping the prefix
+        // here would name a different thing.
+        let device = PathBuf::from(r"\\?\Volume{9f3b2c1a-0000-0000-0000-100000000000}\data");
+        assert_eq!(friendly_path(&device), device);
+    }
 }
