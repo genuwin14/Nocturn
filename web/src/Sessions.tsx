@@ -9,6 +9,14 @@ interface Props {
   onDisconnect: () => void;
 }
 
+// Only two of the three are worth spending a row's width on. "Working" is the
+// unremarkable state, and a session that needs an answer should stand out from
+// the ones that do not.
+const ACTIVITY_NOTE: Record<string, string> = {
+  waiting: 'needs an answer',
+  idle: 'idle',
+};
+
 function age(createdAt: number): string {
   const seconds = Math.max(0, Math.floor(Date.now() / 1000) - createdAt);
   if (seconds < 60) return `${seconds}s`;
@@ -65,10 +73,14 @@ export function Sessions({ connection, current, onSelect, onClose, onDisconnect 
           {sessions.map((item) => (
             <li key={item.id} className={item.id === current ? 'current' : ''}>
               <button type="button" className="session-row" onClick={() => onSelect(item.id)}>
-                <span className={`status-dot ${item.alive ? 'connected' : 'error'}`} />
+                <span className={`status-dot ${item.alive ? item.state : 'error'}`} />
                 <span className="session-row-name">{item.id}</span>
-                <span className="session-row-meta">
-                  {item.alive ? `${age(item.created_at)} · ${item.cols}×${item.rows}` : `exited ${item.exit_code}`}
+                <span className={`session-row-meta ${item.alive ? item.state : ''}`}>
+                  {item.alive
+                    ? [age(item.created_at), ACTIVITY_NOTE[item.state]]
+                        .filter(Boolean)
+                        .join(' · ')
+                    : `exited ${item.exit_code}`}
                 </span>
               </button>
               <button

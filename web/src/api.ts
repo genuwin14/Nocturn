@@ -6,6 +6,18 @@ export interface Connection {
   token: string;
 }
 
+/**
+ * What a session is doing, as inferred by the daemon from its output stream.
+ *
+ * `waiting` is the one that matters: quiet, but not at a prompt, so something
+ * is blocked on an answer. An agent stopped on a permission request is
+ * otherwise indistinguishable from one still thinking.
+ *
+ * Advisory — it comes from a heuristic that can misread an unusual prompt, so
+ * it drives labels and nothing else.
+ */
+export type Activity = 'working' | 'idle' | 'waiting';
+
 export interface SessionInfo {
   id: string;
   created_at: number;
@@ -16,6 +28,7 @@ export interface SessionInfo {
   alive: boolean;
   exit_code: number | null;
   scrollback_bytes: number;
+  state: Activity;
 }
 
 export interface Entry {

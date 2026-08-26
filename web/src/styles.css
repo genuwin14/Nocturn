@@ -124,6 +124,35 @@ code {
   background: var(--error);
 }
 
+/*
+  Activity, shown in place of connection state once the socket is up. Idle is
+  the resting colour; working pulses because something is happening; waiting is
+  amber and pulses faster, because it is the only one of the three that is
+  asking for a person.
+*/
+.status-dot.idle {
+  background: var(--ok);
+}
+.status-dot.working {
+  background: var(--accent);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.status-dot.waiting {
+  background: var(--warn);
+  animation: pulse 0.9s ease-in-out infinite;
+  /* Amber on a dark header is easy to miss in peripheral vision; the halo is
+     what makes it findable without staring at it. */
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent);
+}
+
+.status-text.waiting {
+  color: var(--warn);
+}
+
+.session-row-meta.waiting {
+  color: var(--warn);
+}
+
 @keyframes pulse {
   50% {
     opacity: 0.3;
@@ -132,7 +161,9 @@ code {
 
 @media (prefers-reduced-motion: reduce) {
   .status-dot.connecting,
-  .status-dot.reconnecting {
+  .status-dot.reconnecting,
+  .status-dot.working,
+  .status-dot.waiting {
     animation: none;
   }
 }

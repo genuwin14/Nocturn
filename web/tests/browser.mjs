@@ -52,9 +52,17 @@ try {
   await page.waitForSelector('.terminal-host', { timeout: 10000 });
   check('connecting advances to the terminal view', true);
 
+  // Once the socket is up the indicator stops reporting the connection and
+  // starts reporting what the shell is doing, so reaching any activity class
+  // is what "connected" now looks like.
+  const ACTIVITY = ['working', 'idle', 'waiting'];
   await page.waitForFunction(
-    () => document.querySelector('.status-dot')?.classList.contains('connected'),
+    (states) => {
+      const dot = document.querySelector('.status-dot');
+      return !!dot && states.some((s) => dot.classList.contains(s));
+    },
     { timeout: 10000 },
+    ACTIVITY,
   );
   check('websocket reports connected', true);
 
@@ -65,6 +73,25 @@ try {
   const promptText = await page.$eval('.xterm-screen', (el) => el.textContent ?? '');
   check('terminal rendered shell output', promptText.trim().length > 0,
     `${promptText.trim().length} chars on screen`);
+
+  // --- activity badge ---
+  // The daemon's IDLE_AFTER is 3s and the shell has been quiet for at least
+  // the 4s above, so it should have settled at its prompt by now.
+  //
+  // Only the idle case is driven here. Triggering `waiting` needs a
+  // shell-specific blocking command, and the wire suite already drives a real
+  // blocked prompt on both dialects; the three states render through the same
+  // className path, so this covers the rendering.
+  const badge = await page.evaluate(() => ({
+    dot: document.querySelector('.status-dot')?.className ?? '',
+    text: document.querySelector('.status-text')?.textContent ?? '',
+    live: document.querySelector('.status-text')?.getAttribute('aria-live') ?? '',
+  }));
+  check('a settled shell reports idle rather than "Connected"',
+    badge.dot.includes('idle') && badge.text.includes('Idle'),
+    `dot="${badge.dot.trim()}" text="${badge.text}"`);
+  check('the activity indicator is a live region',
+    badge.live === 'polite', `aria-live=${badge.live}`);
 
   await page.screenshot({ path: `${OUT}/02-terminal.png` });
 

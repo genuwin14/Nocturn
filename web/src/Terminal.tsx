@@ -10,7 +10,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
-import { openTerminal, type Connection } from './api';
+import { openTerminal, type Activity, type Connection } from './api';
 import { controlCharacter } from './KeyBar';
 
 export type Status = 'connecting' | 'connected' | 'reconnecting' | 'error';
@@ -25,6 +25,11 @@ interface Props {
   connection: Connection;
   session: string;
   onStatusChange?: (status: Status, detail?: string) => void;
+  /**
+   * Reports what the shell is doing, with the last line of output when it is
+   * idle or waiting. Called on attach and on every transition.
+   */
+  onActivityChange?: (activity: Activity, tail: string) => void;
   /** When true, the next printable keypress is sent as a control character. */
   ctrlArmed?: boolean;
   onCtrlConsumed?: () => void;
@@ -58,7 +63,7 @@ const THEME = {
 
 export const TerminalView = forwardRef<TerminalHandle, Props>(
   function TerminalView(
-    { connection, session, onStatusChange, ctrlArmed, onCtrlConsumed },
+    { connection, session, onStatusChange, onActivityChange, ctrlArmed, onCtrlConsumed },
     ref,
   ) {
     const hostRef = useRef<HTMLDivElement>(null);
@@ -81,6 +86,19 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
     const onCtrlConsumedRef = useRef(onCtrlConsumed);
     ctrlArmedRef.current = ctrlArmed ?? false;
     onCtrlConsumedRef.current = onCtrlConsumed;
+
+    // Held in a ref rather than closed over, so that a caller passing an
+    // unstable callback cannot re-run the connection effect. Tearing down a
+    // working socket because a parent re-rendered would drop the terminal and
+    // replay the entire scrollback.
+    //
+    // Synced in an effect rather than during render like the two refs above:
+    // writing a ref while rendering is what those trip the linter over, and
+    // there is no reason to repeat it in new code.
+    const onActivityChangeRef = useRef(onActivityChange);
+    useEffect(() => {
+      onActivityChangeRef.current = onActivityChange;
+    }, [onActivityChange]);
 
     /**
      * Writes to the live socket, if there is one. Stable across renders.
@@ -196,6 +214,13 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
                 );
               } else if (message.type === 'error') {
                 term.write(`\r\n\x1b[38;5;203m[${message.message}]\x1b[0m\r\n`);
+              } else if (message.type === 'ready') {
+                // Carries the current state, so reattaching mid-run shows the
+                // truth immediately rather than looking idle until the next
+                // transition — which for a long build could be minutes away.
+                onActivityChangeRef.current?.(message.state, '');
+              } else if (message.type === 'state') {
+                onActivityChangeRef.current?.(message.state, message.tail ?? '');
               }
             } catch {
               /* not a control message we understand; ignore */
