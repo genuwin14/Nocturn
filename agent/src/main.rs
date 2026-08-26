@@ -9,6 +9,7 @@ mod auth;
 mod fsapi;
 mod gitapi;
 mod protocol;
+mod roots;
 mod session;
 mod tokens;
 mod ws;
@@ -19,7 +20,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     routing::{delete, get, post, put},
     Json, Router,
 };
@@ -27,6 +28,7 @@ use clap::Parser;
 use serde::Serialize;
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 
+use roots::{RootInfo, Roots};
 use session::{SessionInfo, SessionManager};
 use tokens::{TokenInfo, TokenStore};
 
@@ -34,7 +36,7 @@ use tokens::{TokenInfo, TokenStore};
 pub struct AppState {
     pub sessions: Arc<SessionManager>,
     pub tokens: Arc<TokenStore>,
-    pub root: Arc<PathBuf>,
+    pub roots: Arc<Roots>,
     /// Carried so a newly minted token can be returned with a ready-to-scan
     /// pairing URL, which the daemon cannot otherwise reconstruct.
     pub bind: SocketAddr,
@@ -54,8 +56,21 @@ struct Args {
     bind: SocketAddr,
 
     /// Project root. Shells start here and the file API cannot escape it.
+    ///
+    /// Repeat it to serve several projects from one daemon:
+    ///
+    ///     --root ~/code/nocturn --root ~/code/api --root ~/notes
+    ///
+    /// The first is the default. Each is named after its directory, with a
+    /// `name=path` form for two projects whose folders share a basename.
+    ///
+    /// Prefer several narrow roots to one broad one. Root is the blast radius
+    /// of the token, and rooting at a home directory puts SSH keys and browser
+    /// profiles behind a single revocable string.
+    ///
+    /// The environment variable takes exactly one path, as it always has.
     #[arg(long, env = "NOCTURN_ROOT")]
-    root: Option<PathBuf>,
+    root: Vec<String>,
 
     /// Access token. Generated and persisted on first run if omitted.
     #[arg(long, env = "NOCTURN_TOKEN", hide_env_values = true)]
@@ -106,12 +121,9 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let root = args
-        .root
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let root = root
-        .canonicalize()
-        .with_context(|| format!("project root does not exist: {}", root.display()))?;
+    // Resolved before anything else starts: a mistyped root is a startup error
+    // worth failing on, not something to discover on the first request.
+    let roots = Arc::new(Roots::parse(&args.root)?);
 
     // A token supplied by flag or environment is a *bootstrap* credential: it
     // always works, is never written down, and cannot be revoked through the
@@ -160,21 +172,16 @@ async fn main() -> Result<()> {
 
     let shell = resolve_shell(args.shell);
 
-    // Shells start in the drive-letter form, not the canonical one. See
-    // `friendly_path`: the two are the same directory, and the difference is
-    // only ever visible to a person.
-    let shell_root = friendly_path(&root);
-
     let sessions = Arc::new(SessionManager::new(
         shell.clone(),
-        shell_root.clone(),
+        roots.clone(),
         !args.allow_api_key,
     ));
 
     let state = AppState {
         sessions,
         tokens: store.clone(),
-        root: Arc::new(root.clone()),
+        roots: roots.clone(),
         bind: args.bind,
         public_url: args.public_url.clone(),
     };
@@ -183,6 +190,7 @@ async fn main() -> Result<()> {
         .route("/ws/terminal", get(ws::terminal_handler))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}", delete(delete_session))
+        .route("/api/roots", get(list_roots))
         .route("/api/fs/list", get(fsapi::list))
         .route("/api/fs/read", get(fsapi::read))
         .route("/api/fs/write", put(fsapi::write))
@@ -225,7 +233,7 @@ async fn main() -> Result<()> {
     let devices = store.list(None).await;
     print_banner(
         &args.bind,
-        &shell_root,
+        &roots,
         &shell,
         &banner_token,
         &devices,
@@ -266,15 +274,44 @@ async fn list_sessions(State(state): State<AppState>) -> Json<Vec<SessionInfo>> 
     Json(state.sessions.list().await)
 }
 
+#[derive(serde::Deserialize)]
+struct RootQuery {
+    #[serde(default)]
+    root: Option<String>,
+}
+
 async fn delete_session(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
+    Query(query): Query<RootQuery>,
 ) -> axum::http::StatusCode {
-    if state.sessions.delete(&id).await {
+    if state.sessions.delete(&id, query.root.as_deref()).await {
         axum::http::StatusCode::NO_CONTENT
     } else {
         axum::http::StatusCode::NOT_FOUND
     }
+}
+
+/// Lists the projects this daemon serves.
+///
+/// The `repo` flag costs one `git rev-parse` per root, which is why it lives
+/// here rather than in the status endpoint: the client needs it once, to decide
+/// whether the Review tab is worth offering for a root, not on every poll.
+async fn list_roots(State(state): State<AppState>) -> Json<Vec<RootInfo>> {
+    let default = state.roots.default_root().name.clone();
+
+    let mut out = Vec::new();
+    for root in state.roots.all() {
+        out.push(RootInfo {
+            name: root.name.clone(),
+            // The readable form. The canonical one is an implementation detail
+            // of confinement and means nothing to a person.
+            path: root.display.to_string_lossy().into_owned(),
+            default: root.name == default,
+            repo: gitapi::is_repo(&root.path).await,
+        });
+    }
+    Json(out)
 }
 
 /// Strips Windows' extended-length `\\?\` prefix for display and for the
@@ -289,9 +326,9 @@ async fn delete_session(
 ///
 /// So the canonical root stays canonical for `AppState`, and this form is used
 /// for the banner and for spawning shells. Same directory either way.
-fn friendly_path(path: &PathBuf) -> PathBuf {
+pub(crate) fn friendly_path(path: &std::path::Path) -> PathBuf {
     if !cfg!(windows) {
-        return path.clone();
+        return path.to_path_buf();
     }
 
     let text = path.to_string_lossy();
@@ -311,7 +348,7 @@ fn friendly_path(path: &PathBuf) -> PathBuf {
         }
     }
 
-    path.clone()
+    path.to_path_buf()
 }
 
 /// Picks the shell to spawn, honouring an explicit override first.
@@ -377,7 +414,7 @@ pub(crate) fn restrict_permissions(path: &std::path::Path) {
 
 fn print_banner(
     bind: &SocketAddr,
-    root: &std::path::Path,
+    roots: &Roots,
     shell: &[String],
     token: &str,
     devices: &[TokenInfo],
@@ -386,7 +423,22 @@ fn print_banner(
     println!();
     println!("  nocturn-agent {}", env!("CARGO_PKG_VERSION"));
     println!("  listening   http://{bind}");
-    println!("  root        {}", root.display());
+    // One line each, labelled, so which name reaches which directory is
+    // readable rather than something to infer. The first is the default and
+    // says so, since that is the one an unqualified request lands in.
+    for (i, root) in roots.all().iter().enumerate() {
+        let label = if i == 0 { "roots" } else { "" };
+        let default = if i == 0 && roots.all().len() > 1 {
+            "  (default)"
+        } else {
+            ""
+        };
+        println!(
+            "  {label:<11} {:<12} {}{default}",
+            root.name,
+            root.display.display()
+        );
+    }
     println!("  shell       {}", shell.join(" "));
     if token.is_empty() {
         // Stored tokens are hashes, so there is no secret to print on a

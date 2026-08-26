@@ -1,6 +1,6 @@
 # 0002. Session activity signal
 
-Status: Proposed
+Status: Accepted
 
 ## Context
 

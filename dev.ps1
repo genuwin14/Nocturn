@@ -12,13 +12,17 @@
     a port already held, a root that does not exist.
 
 .PARAMETER Root
-    Project root. Shells start here and the file API cannot escape it.
+    Project roots. Shells start in one and the file API cannot escape it.
     Defaults to this repository, which is a git repository and so gives the
     Review tab something real to show.
 
-    Point this at whatever you want to reach from your phone. Prefer a folder
-    holding your projects over something broad like C:\ — root is the blast
-    radius of the token, and the terminal can cd anywhere regardless.
+    Takes a list, so one daemon can serve several projects:
+
+        .\dev.ps1 -Root C:\code\api, C:\code\web, C:\notes
+
+    The first is the default. Prefer several narrow roots to one broad one like
+    C:\ — root is the blast radius of the token, and the terminal can cd
+    anywhere regardless.
 
 .PARAMETER Port
     Loopback port. Default 7071.
@@ -40,10 +44,14 @@
 .EXAMPLE
     .\dev.ps1 -Root C:\code\my-app -Open
     Serves another project and opens it in the browser.
+
+.EXAMPLE
+    .\dev.ps1 -Root C:\code\api, C:\code\web
+    Serves two projects from one daemon. C:\code\api is the default.
 #>
 [CmdletBinding()]
 param(
-    [string]$Root,
+    [string[]]$Root,
     [int]$Port = 7071,
     [string]$Token,
     [string]$Shell,
@@ -57,15 +65,21 @@ $ErrorActionPreference = 'Stop'
 # empty string and every path built from it fails.
 $repo = $PSScriptRoot
 if (-not $repo) { $repo = Split-Path -Parent $MyInvocation.MyCommand.Path }
-if (-not $Root) { $Root = $repo }
+if (-not $Root) { $Root = @($repo) }
 
 $exe = Join-Path $repo 'agent\target\release\nocturn-agent.exe'
 $dist = Join-Path $repo 'web\dist'
 
 # --- preflight ---------------------------------------------------------------
 
-if (-not (Test-Path $Root)) {
-    Write-Host "Project root does not exist: $Root" -ForegroundColor Red
+# Each one, by name. The daemon refuses to start on a missing root, but it
+# reports the first failure only, and with several given it is worth saying
+# which of them is the problem.
+$missing = @($Root | Where-Object { -not (Test-Path $_) })
+if ($missing) {
+    foreach ($path in $missing) {
+        Write-Host "Project root does not exist: $path" -ForegroundColor Red
+    }
     exit 1
 }
 
@@ -107,10 +121,10 @@ Write-Host "nocturn-agent built $($built.ToString('yyyy-MM-dd HH:mm:ss'))" -Fore
 # --- run ---------------------------------------------------------------------
 
 $agentArgs = @(
-    '--root', $Root
     '--bind', "127.0.0.1:$Port"
     '--web', $dist
 )
+foreach ($path in $Root) { $agentArgs += @('--root', $path) }
 if ($Token) { $agentArgs += @('--token', $Token) }
 if ($Shell) { $agentArgs += @('--shell', $Shell) }
 

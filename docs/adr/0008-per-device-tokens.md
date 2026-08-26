@@ -1,6 +1,6 @@
 # 0008. Per-device tokens
 
-Status: Proposed
+Status: Accepted
 
 ## Context
 

@@ -101,7 +101,14 @@ it spawned instead of orphaning them.
 
 ## Getting your code onto the VM
 
-The daemon serves whatever is under `--root`. Two sane options:
+The daemon serves whatever is under `--root`, and takes more than one — so
+several projects can live side by side without a second service on a second
+port. The installer sets `NOCTURN_ROOT` to a single directory, which is still
+one root; add the rest by editing `ExecStart` in the unit if you want them.
+Prefer several narrow roots to one broad one: root is the blast radius of the
+token.
+
+Two sane options for getting the code there:
 
 - **Clone there.** Treat the VM as a real dev box: `git clone` into
   `/srv/projects`, work there, push from there. This is the model Nocturn is

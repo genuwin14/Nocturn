@@ -1,6 +1,6 @@
 # 0007. Multiple project roots
 
-Status: Proposed
+Status: Accepted
 
 ## Context
 

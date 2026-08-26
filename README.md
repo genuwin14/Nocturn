@@ -100,6 +100,7 @@ Two scripts wrap the same commands:
 .\build.ps1          # both halves; -Agent or -Web for one
 .\dev.ps1            # serve this repository on 127.0.0.1:7071
 .\dev.ps1 -Root C:\code\my-app -Open
+.\dev.ps1 -Root C:\code\api, C:\code\web    # several projects at once
 ```
 
 They exist for one recurring annoyance: Windows keeps an open handle on a
@@ -124,13 +125,46 @@ then prints it. Pass `--token` or set `NOCTURN_TOKEN` to supply your own.
 | Flag | Default | Purpose |
 |---|---|---|
 | `--bind` | `127.0.0.1:7071` | Listen address. Keep it on loopback; expose via Tailscale, not a port-forward. |
-| `--root` | cwd | Project root. Shells start here; the file API cannot escape it. |
+| `--root` | cwd | Project root. Shells start here; the file API cannot escape it. Repeatable — see below. |
 | `--token` | generated | Access token. Also `NOCTURN_TOKEN`. |
 | `--shell` | `$SHELL -l`, or PowerShell | Shell to spawn. Accepts arguments: `--shell "tmux new -A -s claude"`. |
 | `--web` | — | Serve a built web client from this directory. |
 | `--public-url` | — | The address clients actually reach, for the pairing code. |
 | `--pair` | — | Print the pairing code and exit, without starting a server. |
 | `--allow-api-key` | off | See the billing note below. |
+
+### Several projects, one daemon
+
+`--root` takes more than one:
+
+```bash
+nocturn-agent --root ~/code/nocturn --root ~/code/api --root ~/notes
+```
+
+The first is the default — what a request that names no root reaches. Each is
+named after its directory, and `name=path` disambiguates two projects whose
+folders share a basename:
+
+```bash
+nocturn-agent --root client=~/work/acme/api --root internal=~/side/api
+```
+
+This exists to make the narrow root the convenient one. A single fixed root
+means reaching a second project costs either a second daemon on a second port
+or a root like `$HOME`, and everybody picks the second. Root is the blast radius
+of the token: rooted at a home directory, one revocable string covers SSH keys,
+browser profiles, and saved credentials. Three named roots and there is no
+reason to reach for it.
+
+Roots are fixed at startup, deliberately. An endpoint that could add one would
+be an endpoint that widens the daemon's own reach, which is a meaningfully
+worse thing to hold a token for.
+
+Session names are scoped to their root, so `main` is a different shell in each
+project rather than one shared between them. What is *not* affected is the
+terminal: `cd` anywhere still works, because confining a shell whose purpose is
+running arbitrary commands would be theatre. Root binds the file API and the
+directory shells start in.
 
 ### Pairing a phone
 
@@ -178,21 +212,27 @@ All routes except `/health` require the token, presented one of three ways:
 | Method | Path | |
 |---|---|---|
 | `GET` | `/health` | Unauthenticated liveness check. |
-| `GET` | `/ws/terminal?session=&cols=&rows=` | Attach to a session, creating it if new. |
-| `GET` | `/api/sessions` | List sessions with state and scrollback size. |
-| `DELETE` | `/api/sessions/{id}` | Kill the shell and discard the session. |
-| `GET` | `/api/fs/list?path=` | Directory listing, root-relative. |
-| `GET` | `/api/fs/read?path=` | File contents (2 MiB cap, UTF-8 text only). |
-| `PUT` | `/api/fs/write` | `{"path":"…","content":"…"}` |
+| `GET` | `/ws/terminal?session=&root=&cols=&rows=` | Attach to a session, creating it if new. |
+| `GET` | `/api/sessions` | List sessions with their root, state, and scrollback size. |
+| `DELETE` | `/api/sessions/{id}?root=` | Kill the shell and discard the session. |
+| `GET` | `/api/roots` | The projects served, with paths and which are repositories. |
+| `GET` | `/api/fs/list?root=&path=` | Directory listing, root-relative. |
+| `GET` | `/api/fs/read?root=&path=` | File contents (2 MiB cap, UTF-8 text only). |
+| `PUT` | `/api/fs/write` | `{"root":"…","path":"…","content":"…"}` |
 | `GET` | `/api/tokens` | Devices, with last seen and last address. Never returns secrets. |
 | `POST` | `/api/tokens` | `{"name":"pixel-9"}` — mints one, returning the secret once. |
 | `DELETE` | `/api/tokens/{id}` | Revoke, immediately and including live sockets. |
-| `GET` | `/api/git/status` | Branch, ahead/behind, and per-file staged/unstaged state. |
-| `GET` | `/api/git/diff?path=&staged=` | Unified diff, whole tree or one path (2 MiB cap). |
-| `POST` | `/api/git/stage` | `{"paths":[…]}` |
-| `POST` | `/api/git/unstage` | `{"paths":[…]}` |
-| `POST` | `/api/git/discard` | `{"paths":[…]}` — tracked files only; see below. |
-| `POST` | `/api/git/commit` | `{"message":"…"}`, commits what is staged. |
+| `GET` | `/api/git/status?root=` | Branch, ahead/behind, and per-file staged/unstaged state. |
+| `GET` | `/api/git/diff?root=&path=&staged=` | Unified diff, whole tree or one path (2 MiB cap). |
+| `POST` | `/api/git/stage` | `{"root":"…","paths":[…]}` |
+| `POST` | `/api/git/unstage` | `{"root":"…","paths":[…]}` |
+| `POST` | `/api/git/discard` | `{"root":"…","paths":[…]}` — tracked files only; see below. |
+| `POST` | `/api/git/commit` | `{"root":"…","message":"…"}`, commits what is staged. |
+
+`root` is optional everywhere it appears and means the first `--root` when
+absent, so a client that has never heard of roots keeps working unchanged.
+Naming one that does not exist is refused before any path handling, with the
+list of names that do.
 
 ### Reviewing, not operating
 
@@ -222,7 +262,7 @@ xterm.js writes them straight through. Text frames carry JSON:
 {"type":"ping"}
 
 // server -> client
-{"type":"ready","session":"main","cols":120,"rows":40,"replayed":8412,"alive":true}
+{"type":"ready","session":"main","root":"nocturn","cols":120,"rows":40,"replayed":8412,"alive":true}
 {"type":"exit","code":0}
 {"type":"pong"}
 {"type":"error","message":"output dropped: 3 chunks skipped"}

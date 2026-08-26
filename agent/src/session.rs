@@ -17,6 +17,8 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde::Serialize;
 use tokio::sync::{broadcast, RwLock};
 
+use crate::roots::Roots;
+
 /// How much output we retain per session for replay on reattach. Enough for a
 /// few screens of build output without letting an idle session that is printing
 /// logs grow without bound.
@@ -138,6 +140,10 @@ struct ActivityState {
 
 pub struct Session {
     pub id: String,
+    /// Name of the root this session was started in. Fixed for its lifetime —
+    /// the shell can `cd` anywhere, but which project it belongs to is decided
+    /// once, when it is spawned.
+    pub root: String,
     pub created_at: u64,
     pub command: String,
     pub cwd: String,
@@ -153,6 +159,7 @@ pub struct Session {
 #[derive(Serialize)]
 pub struct SessionInfo {
     pub id: String,
+    pub root: String,
     pub created_at: u64,
     pub command: String,
     pub cwd: String,
@@ -169,6 +176,7 @@ pub struct SessionInfo {
 impl Session {
     fn spawn(
         id: String,
+        root: String,
         command: Vec<String>,
         cwd: PathBuf,
         cols: u16,
@@ -193,6 +201,7 @@ impl Session {
         cmd.cwd(&cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("NOCTURN_SESSION", &id);
+        cmd.env("NOCTURN_ROOT_NAME", &root);
 
         // Claude Code bills at pay-as-you-go API rates whenever this variable is
         // present, silently ignoring a Pro or Max subscription. The daemon owns
@@ -223,6 +232,7 @@ impl Session {
 
         let session = Arc::new(Session {
             id: id.clone(),
+            root,
             created_at: unix_now(),
             command: command.join(" "),
             cwd: cwd.to_string_lossy().into_owned(),
@@ -466,6 +476,7 @@ impl Session {
         let scrollback_bytes = self.fanout.lock().map(|f| f.scrollback.buf.len()).unwrap_or(0);
         SessionInfo {
             id: self.id.clone(),
+            root: self.root.clone(),
             created_at: self.created_at,
             command: self.command.clone(),
             cwd: self.cwd.clone(),
@@ -557,16 +568,28 @@ fn looks_like_prompt(line: &str) -> bool {
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, Arc<Session>>>,
     shell: Vec<String>,
-    root: PathBuf,
+    roots: Arc<Roots>,
     scrub_api_key: bool,
 }
 
+/// Sessions are keyed by root and id together, so `main` means one shell per
+/// project rather than one shell shared between them — which is the name every
+/// client reaches for first, and would otherwise put you in whichever project
+/// happened to open it.
+///
+/// Unambiguous because a root name can contain no `/`: `Roots` rejects one at
+/// startup. So the first segment is always the root and the rest is the id,
+/// however many slashes the id itself has.
+fn key(root: &str, id: &str) -> String {
+    format!("{root}/{id}")
+}
+
 impl SessionManager {
-    pub fn new(shell: Vec<String>, root: PathBuf, scrub_api_key: bool) -> Self {
+    pub fn new(shell: Vec<String>, roots: Arc<Roots>, scrub_api_key: bool) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
             shell,
-            root,
+            roots,
             scrub_api_key,
         }
     }
@@ -574,27 +597,49 @@ impl SessionManager {
     /// Attaches to an existing session or spawns a new one. A session whose
     /// child has exited is returned as-is rather than respawned, so the client
     /// can still read the output that led to the exit; delete it to start over.
-    pub async fn get_or_create(&self, id: &str, cols: u16, rows: u16) -> Result<Arc<Session>> {
-        if let Some(existing) = self.sessions.read().await.get(id) {
+    ///
+    /// `root` names which project the session belongs to, and only matters when
+    /// one is being created — an existing session keeps the root it was spawned
+    /// in. Absent means the default root, which is what a client that has never
+    /// heard of roots sends.
+    pub async fn get_or_create(
+        &self,
+        id: &str,
+        root: Option<&str>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Arc<Session>> {
+        // Resolved first: naming a root that does not exist is a bad request,
+        // not a reason to spawn a shell somewhere else.
+        let root = self.roots.require_named(root)?;
+        let key = key(&root.name, id);
+
+        if let Some(existing) = self.sessions.read().await.get(&key) {
             return Ok(existing.clone());
         }
 
         let mut sessions = self.sessions.write().await;
         // Another attach may have created it while we waited for the write lock.
-        if let Some(existing) = sessions.get(id) {
+        if let Some(existing) = sessions.get(&key) {
             return Ok(existing.clone());
         }
 
         let session = Session::spawn(
             id.to_string(),
+            root.name.clone(),
             self.shell.clone(),
-            self.root.clone(),
+            root.display.clone(),
             cols,
             rows,
             self.scrub_api_key,
         )?;
-        tracing::info!(session = %id, command = %session.command, "session started");
-        sessions.insert(id.to_string(), session.clone());
+        tracing::info!(
+            session = %id,
+            root = %root.name,
+            command = %session.command,
+            "session started"
+        );
+        sessions.insert(key, session.clone());
         Ok(session)
     }
 
@@ -605,14 +650,18 @@ impl SessionManager {
         out
     }
 
-    pub async fn get(&self, id: &str) -> Option<Arc<Session>> {
-        self.sessions.read().await.get(id).cloned()
+    pub async fn get(&self, id: &str, root: Option<&str>) -> Option<Arc<Session>> {
+        let root = self.roots.require_named(root).ok()?;
+        self.sessions.read().await.get(&key(&root.name, id)).cloned()
     }
 
     /// Kills the child if it is still running and drops the session, discarding
     /// its scrollback. Reconnecting with the same id then starts a fresh shell.
-    pub async fn delete(&self, id: &str) -> bool {
-        let removed = self.sessions.write().await.remove(id);
+    pub async fn delete(&self, id: &str, root: Option<&str>) -> bool {
+        let Ok(root) = self.roots.require_named(root) else {
+            return false;
+        };
+        let removed = self.sessions.write().await.remove(&key(&root.name, id));
         match removed {
             Some(session) => {
                 if session.is_alive() {

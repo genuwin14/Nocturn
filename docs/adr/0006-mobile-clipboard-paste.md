@@ -1,6 +1,6 @@
 # 0006. Mobile clipboard paste
 
-Status: Proposed
+Status: Accepted
 
 ## Context
 

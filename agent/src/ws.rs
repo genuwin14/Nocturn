@@ -1,6 +1,8 @@
 //! Terminal WebSocket endpoint.
 //!
-//! Attach with `GET /ws/terminal?session=main&cols=120&rows=40`. The connection
+//! Attach with `GET /ws/terminal?session=main&root=api&cols=120&rows=40`. The
+//! session name is scoped to the root, so `main` is a different shell in each
+//! project; leaving `root` off means the default one. The connection
 //! is a view onto a session, never its owner: dropping it leaves the shell
 //! running, and reattaching replays the scrollback so the client picks up
 //! exactly where it left off.
@@ -41,6 +43,11 @@ const CLOSE_GRACE: Duration = Duration::from_secs(5);
 pub struct AttachParams {
     #[serde(default = "default_session")]
     session: String,
+    /// Which project the session belongs to. Only consulted when creating one;
+    /// attaching to a session that already exists uses the root it was spawned
+    /// in, which `ready` reports back.
+    #[serde(default)]
+    root: Option<String>,
     #[serde(default = "default_cols")]
     cols: u16,
     #[serde(default = "default_rows")]
@@ -85,7 +92,12 @@ async fn run(
 ) -> anyhow::Result<()> {
     let session = state
         .sessions
-        .get_or_create(&params.session, params.cols, params.rows)
+        .get_or_create(
+            &params.session,
+            params.root.as_deref(),
+            params.cols,
+            params.rows,
+        )
         .await?;
 
     // The attaching client's geometry wins, so a phone rotating to landscape
@@ -105,6 +117,7 @@ async fn run(
     let (cols, rows) = session.size();
     let ready = ServerMsg::Ready {
         session: session.id.clone(),
+        root: session.root.clone(),
         cols,
         rows,
         replayed,

@@ -6,11 +6,15 @@
 //! anyone wants to attempt on a touchscreen.
 //!
 //! Every path is validated the same way the file API validates its own, and
-//! the repository top level must sit inside the configured root. A root that
-//! is a *subdirectory* of a larger repository is refused rather than served,
-//! since git reports and operates on paths relative to the repository top
-//! level, which in that arrangement would reach outside the root the token is
-//! supposed to be confined to.
+//! the repository top level must sit inside the root the request named. A root
+//! that is a *subdirectory* of a larger repository is refused rather than
+//! served, since git reports and operates on paths relative to the repository
+//! top level, which in that arrangement would reach outside the root the token
+//! is supposed to be confined to.
+//!
+//! Status is per-root, so every endpoint here takes the same optional `root`
+//! the file API does. A daemon serving three projects has three answers to
+//! "what changed", and the request has to say which one it is asking about.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -32,6 +36,9 @@ const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Serialize)]
 pub struct RepoStatus {
+    /// Which root this describes, echoed so a client switching roots can drop
+    /// an answer that arrived for the previous one.
+    root: String,
     /// False when the root is not a usable repository. Everything else is then
     /// empty and `reason` says why, so the client can hide the tab rather than
     /// render an error.
@@ -84,8 +91,17 @@ pub struct Diff {
     staged: bool,
 }
 
+/// Every endpoint here takes the root it acts on; absent means the default.
+#[derive(Deserialize)]
+pub struct RootQuery {
+    #[serde(default)]
+    root: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub struct DiffQuery {
+    #[serde(default)]
+    root: Option<String>,
     /// Restricts the diff to one path. Empty means the whole worktree.
     #[serde(default)]
     path: String,
@@ -95,11 +111,15 @@ pub struct DiffQuery {
 
 #[derive(Deserialize)]
 pub struct PathsRequest {
+    #[serde(default)]
+    root: Option<String>,
     paths: Vec<String>,
 }
 
 #[derive(Deserialize)]
 pub struct CommitRequest {
+    #[serde(default)]
+    root: Option<String>,
     message: String,
 }
 
@@ -256,11 +276,23 @@ async fn require_repo(root: &Path) -> Result<PathBuf, ApiError> {
         .map_err(|reason| err(StatusCode::BAD_REQUEST, reason))
 }
 
-pub async fn status(State(state): State<AppState>) -> Result<Json<RepoStatus>, ApiError> {
-    let top = match locate_repo(&state.root).await {
+/// Whether a root has a usable repository, for the root listing. Answers the
+/// same question `status` does, without the cost of a full status read — the
+/// listing only needs to know whether the Review tab is worth offering.
+pub(crate) async fn is_repo(root: &Path) -> bool {
+    locate_repo(root).await.is_ok()
+}
+
+pub async fn status(
+    State(state): State<AppState>,
+    Query(query): Query<RootQuery>,
+) -> Result<Json<RepoStatus>, ApiError> {
+    let root = state.roots.require(query.root.as_deref())?;
+    let top = match locate_repo(&root.path).await {
         Ok(top) => top,
         Err(reason) => {
             return Ok(Json(RepoStatus {
+                root: root.name.clone(),
                 repo: false,
                 reason: Some(reason),
                 branch: None,
@@ -282,6 +314,7 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<RepoStatus>, A
     .await?;
 
     let mut status = parse_status(&raw);
+    status.root = root.name.clone();
 
     // Change sizes, so the list can be triaged without opening every file —
     // on a phone, knowing which of fourteen changes is the big one is most of
@@ -426,6 +459,10 @@ fn parse_status(data: &[u8]) -> RepoStatus {
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
     RepoStatus {
+        // Filled in by the caller, which is the only side that knows which
+        // root it asked about. The parser sees porcelain output and nothing
+        // else, and `discard` uses it purely for its file list.
+        root: String::new(),
         repo: true,
         reason: None,
         branch,
@@ -476,7 +513,8 @@ pub async fn diff(
     State(state): State<AppState>,
     Query(query): Query<DiffQuery>,
 ) -> Result<Json<Diff>, ApiError> {
-    let top = require_repo(&state.root).await?;
+    let root = state.roots.require(query.root.as_deref())?;
+    let top = require_repo(&root.path).await?;
 
     let path = if query.path.is_empty() {
         None
@@ -526,10 +564,12 @@ fn truncate_patch(raw: &[u8]) -> (String, bool) {
 /// Validates the requested paths and hands them to a git subcommand.
 async fn run_on_paths(
     state: &AppState,
+    root: Option<&str>,
     requested: &[String],
     leading: &[&str],
 ) -> Result<Json<PathsResponse>, ApiError> {
-    let top = require_repo(&state.root).await?;
+    let root = state.roots.require(root)?;
+    let top = require_repo(&root.path).await?;
 
     if requested.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "no paths given"));
@@ -552,7 +592,7 @@ pub async fn stage(
     State(state): State<AppState>,
     Json(request): Json<PathsRequest>,
 ) -> Result<Json<PathsResponse>, ApiError> {
-    run_on_paths(&state, &request.paths, &["add"]).await
+    run_on_paths(&state, request.root.as_deref(), &request.paths, &["add"]).await
 }
 
 pub async fn unstage(
@@ -562,7 +602,13 @@ pub async fn unstage(
     // `reset` rather than `restore --staged`: it behaves the same here and also
     // works in a repository with no commits yet, where there is no HEAD to
     // restore from.
-    run_on_paths(&state, &request.paths, &["reset", "--quiet"]).await
+    run_on_paths(
+        &state,
+        request.root.as_deref(),
+        &request.paths,
+        &["reset", "--quiet"],
+    )
+    .await
 }
 
 /// Throws away uncommitted changes to tracked files.
@@ -576,7 +622,8 @@ pub async fn discard(
     State(state): State<AppState>,
     Json(request): Json<PathsRequest>,
 ) -> Result<Json<PathsResponse>, ApiError> {
-    let top = require_repo(&state.root).await?;
+    let root = state.roots.require(request.root.as_deref())?;
+    let top = require_repo(&root.path).await?;
 
     if request.paths.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "no paths given"));
@@ -627,7 +674,8 @@ pub async fn commit(
     State(state): State<AppState>,
     Json(request): Json<CommitRequest>,
 ) -> Result<Json<CommitResponse>, ApiError> {
-    let top = require_repo(&state.root).await?;
+    let root = state.roots.require(request.root.as_deref())?;
+    let top = require_repo(&root.path).await?;
 
     let message = request.message.trim();
     if message.is_empty() {
@@ -648,7 +696,7 @@ pub async fn commit(
     .trim()
     .to_string();
 
-    tracing::info!(sha = %sha, "commit created");
+    tracing::info!(root = %root.name, sha = %sha, "commit created");
     Ok(Json(CommitResponse { sha, summary }))
 }
 

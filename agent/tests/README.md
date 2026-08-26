@@ -23,6 +23,35 @@ cargo run -- --root /tmp/nocturn-test --token test-token-abc123 --bind 127.0.0.1
 node tests/e2e.mjs
 ```
 
+## The other suites
+
+`revoke.mjs` runs against the same daemon and needs nothing extra: it mints its
+own token, opens a socket with it, and revokes it mid-session.
+
+`roots.mjs` needs a daemon started with a specific arrangement, because what it
+tests is confinement *between* roots — including the nested case, where "inside
+a root" and "inside the root you asked for" stop being the same question.
+
+```bash
+mkdir -p /tmp/nocturn-roots/alpha/inner /tmp/nocturn-roots/beta
+echo alpha > /tmp/nocturn-roots/alpha/alpha-only.txt
+echo inner > /tmp/nocturn-roots/alpha/inner/inner-only.txt
+echo beta  > /tmp/nocturn-roots/beta/beta-only.txt
+git -C /tmp/nocturn-roots/beta init -b main
+git -C /tmp/nocturn-roots/beta add -A
+git -C /tmp/nocturn-roots/beta commit -m "Initial"
+
+cargo run -- --token test-token-abc123 --bind 127.0.0.1:7071 \
+  --root /tmp/nocturn-roots/alpha \
+  --root /tmp/nocturn-roots/beta \
+  --root /tmp/nocturn-roots/alpha/inner
+
+node tests/roots.mjs
+```
+
+It writes into `beta`, so give it a throwaway directory rather than a real
+project.
+
 ## Configuration
 
 | Variable | Default |

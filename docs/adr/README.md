@@ -24,13 +24,13 @@ These records cover what is **not yet built**.
 | # | Decision | Status | Priority |
 |---|---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted | — |
-| [0002](0002-session-activity-signal.md) | Session activity signal | Proposed | 1 |
+| [0002](0002-session-activity-signal.md) | Session activity signal | Accepted | 1 |
 | [0003](0003-push-notifications.md) | Push notifications for session events | Proposed | 2 |
-| [0004](0004-git-review-endpoints.md) | Git review endpoints and diff view | Proposed | 3 |
-| [0005](0005-qr-pairing.md) | QR code pairing | Proposed | 4 |
-| [0006](0006-mobile-clipboard-paste.md) | Mobile clipboard paste | Proposed | 5 |
-| [0007](0007-multi-root-projects.md) | Multiple project roots | Proposed | 6 |
-| [0008](0008-per-device-tokens.md) | Per-device tokens | Proposed | 7 |
+| [0004](0004-git-review-endpoints.md) | Git review endpoints and diff view | Accepted | 3 |
+| [0005](0005-qr-pairing.md) | QR code pairing | Accepted | 4 |
+| [0006](0006-mobile-clipboard-paste.md) | Mobile clipboard paste | Accepted | 5 |
+| [0007](0007-multi-root-projects.md) | Multiple project roots | Accepted | 6 |
+| [0008](0008-per-device-tokens.md) | Per-device tokens | Accepted | 7 |
 | [0009](0009-audit-log.md) | Append-only audit log | Proposed | 8 |
 | [0010](0010-scrollback-persistence.md) | Scrollback persistence | Proposed | 9 |
 | [0011](0011-auth-rate-limiting.md) | Auth failure rate limiting | Proposed | 10 |

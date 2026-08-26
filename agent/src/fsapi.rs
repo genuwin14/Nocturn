@@ -1,10 +1,15 @@
 //! Project file browsing and editing.
 //!
-//! Every path in this module is resolved against the daemon's configured root
-//! and canonicalized before use, so `..` segments and symlinks that point
-//! outside the project tree are rejected rather than followed. The terminal has
-//! no such confinement by design — this API is for the file browser, which is
-//! the surface a stolen phone would reach first.
+//! Every path in this module is resolved against one of the daemon's configured
+//! roots and canonicalized before use, so `..` segments and symlinks that point
+//! outside that tree are rejected rather than followed. The terminal has no such
+//! confinement by design — this API is for the file browser, which is the
+//! surface a stolen phone would reach first.
+//!
+//! Requests name a root with `root=`; leaving it off means the first one, which
+//! is what every single-root client already sends. Confinement is unchanged in
+//! kind by there being several: each request resolves against exactly one root,
+//! and cannot reach another by traversal even where they are nested.
 
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -25,6 +30,9 @@ const SNIFF_BYTES: usize = 8192;
 pub struct PathQuery {
     #[serde(default)]
     path: String,
+    /// Which root the path is relative to. Absent means the default one.
+    #[serde(default)]
+    root: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -48,12 +56,16 @@ pub enum EntryKind {
 
 #[derive(Serialize)]
 pub struct Listing {
+    /// Echoed so a client that omitted it still learns which root it reached,
+    /// and so a late response cannot be mistaken for one about another root.
+    root: String,
     path: String,
     entries: Vec<Entry>,
 }
 
 #[derive(Serialize)]
 pub struct FileContent {
+    root: String,
     path: String,
     content: String,
     size: u64,
@@ -64,12 +76,15 @@ pub struct FileContent {
 
 #[derive(Deserialize)]
 pub struct WriteRequest {
+    #[serde(default)]
+    root: Option<String>,
     path: String,
     content: String,
 }
 
 #[derive(Serialize)]
 pub struct WriteResponse {
+    root: String,
     path: String,
     bytes: usize,
 }
@@ -164,7 +179,8 @@ pub async fn list(
     State(state): State<AppState>,
     Query(query): Query<PathQuery>,
 ) -> Result<Json<Listing>, ApiError> {
-    let dir = resolve(&state.root, &query.path, true)?;
+    let root = state.roots.require(query.root.as_deref())?;
+    let dir = resolve(&root.path, &query.path, true)?;
     let mut read_dir = tokio::fs::read_dir(&dir)
         .await
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("cannot list: {e}")))?;
@@ -183,7 +199,7 @@ pub async fn list(
         };
         entries.push(Entry {
             name: item.file_name().to_string_lossy().into_owned(),
-            path: relative(&state.root, &item.path()),
+            path: relative(&root.path, &item.path()),
             kind,
             size: meta.len(),
             modified: meta
@@ -204,7 +220,8 @@ pub async fn list(
     });
 
     Ok(Json(Listing {
-        path: relative(&state.root, &dir),
+        root: root.name.clone(),
+        path: relative(&root.path, &dir),
         entries,
     }))
 }
@@ -213,7 +230,8 @@ pub async fn read(
     State(state): State<AppState>,
     Query(query): Query<PathQuery>,
 ) -> Result<Json<FileContent>, ApiError> {
-    let path = resolve(&state.root, &query.path, true)?;
+    let root = state.roots.require(query.root.as_deref())?;
+    let path = resolve(&root.path, &query.path, true)?;
     let meta = tokio::fs::metadata(&path)
         .await
         .map_err(|e| err(StatusCode::NOT_FOUND, format!("cannot stat: {e}")))?;
@@ -257,7 +275,8 @@ pub async fn read(
     })?;
 
     Ok(Json(FileContent {
-        path: relative(&state.root, &path),
+        root: root.name.clone(),
+        path: relative(&root.path, &path),
         content,
         size,
         truncated,
@@ -268,17 +287,19 @@ pub async fn write(
     State(state): State<AppState>,
     Json(request): Json<WriteRequest>,
 ) -> Result<Json<WriteResponse>, ApiError> {
-    let path = resolve(&state.root, &request.path, false)?;
+    let root = state.roots.require(request.root.as_deref())?;
+    let path = resolve(&root.path, &request.path, false)?;
     let bytes = request.content.len();
 
     tokio::fs::write(&path, request.content.as_bytes())
         .await
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("cannot write: {e}")))?;
 
-    tracing::info!(path = %relative(&state.root, &path), bytes, "file written");
+    tracing::info!(root = %root.name, path = %relative(&root.path, &path), bytes, "file written");
 
     Ok(Json(WriteResponse {
-        path: relative(&state.root, &path),
+        root: root.name.clone(),
+        path: relative(&root.path, &path),
         bytes,
     }))
 }
@@ -323,5 +344,51 @@ mod tests {
         let resolved = resolve(&root, "notes.txt", false).expect("should resolve");
         assert!(resolved.starts_with(&root));
         assert!(resolved.ends_with("notes.txt"));
+    }
+
+    /// Two roots side by side. Naming one must not let a path climb into the
+    /// other, which `..` would do freely if confinement were only "inside some
+    /// root" rather than "inside the root this request named".
+    #[test]
+    fn one_root_cannot_be_reached_by_traversing_out_of_another() {
+        let base = root().join("nocturn-siblings-test");
+        let api = base.join("api");
+        let web = base.join("web");
+        std::fs::create_dir_all(&api).unwrap();
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(web.join("secret.txt"), "s").unwrap();
+
+        let api = api.canonicalize().unwrap();
+        assert!(resolve(&api, "../web/secret.txt", true).is_err());
+        assert!(resolve(&api, "../web", true).is_err());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Nested roots are legitimate — serving a monorepo and one package inside
+    /// it is a reasonable thing to want. The narrow root must stay narrow even
+    /// though the wide one contains it, and the wide one must still reach the
+    /// files the narrow one holds, because it genuinely owns them.
+    #[test]
+    fn nested_roots_each_keep_their_own_boundary() {
+        let base = root().join("nocturn-nested-test");
+        let outer = base.join("mono");
+        let inner = outer.join("packages/ui");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(outer.join("root-only.txt"), "r").unwrap();
+        std::fs::write(inner.join("card.tsx"), "c").unwrap();
+
+        let outer = outer.canonicalize().unwrap();
+        let inner = inner.canonicalize().unwrap();
+
+        // The inner root cannot climb into the part of the monorepo above it.
+        assert!(resolve(&inner, "../../root-only.txt", true).is_err());
+        // But the outer one reaches through the inner, which is inside it.
+        let reached = resolve(&outer, "packages/ui/card.tsx", true).expect("outer owns it");
+        assert!(reached.starts_with(&outer));
+        // And the inner root serves its own file under a shorter path.
+        assert!(resolve(&inner, "card.tsx", true).is_ok());
+
+        std::fs::remove_dir_all(&base).ok();
     }
 }

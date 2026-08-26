@@ -25,6 +25,10 @@ pub enum ServerMsg {
     /// Sent once, immediately after the scrollback replay frame.
     Ready {
         session: String,
+        /// The root this session actually belongs to, which is not necessarily
+        /// the one the client asked for: an existing session keeps the root it
+        /// was spawned in.
+        root: String,
         cols: u16,
         rows: u16,
         /// Bytes of scrollback replayed just before this message.

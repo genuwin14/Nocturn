@@ -1,6 +1,6 @@
 # 0004. Git review endpoints and diff view
 
-Status: Proposed
+Status: Accepted
 
 ## Context
 

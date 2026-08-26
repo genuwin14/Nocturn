@@ -1,6 +1,6 @@
 # 0005. QR code pairing
 
-Status: Proposed
+Status: Accepted
 
 ## Context
 
