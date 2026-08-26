@@ -17,7 +17,12 @@ import './styles.css';
 // fast to load over a phone connection.
 const Files = lazy(() => import('./Files').then((m) => ({ default: m.Files })));
 
-type Tab = 'terminal' | 'files';
+// Review carries no heavy dependency — a diff is rendered as lines, not with
+// an editor — but it is split anyway so it costs nothing until the tab is
+// opened, and the terminal stays the only thing in the first load.
+const Review = lazy(() => import('./Review').then((m) => ({ default: m.Review })));
+
+type Tab = 'terminal' | 'review' | 'files';
 
 const STATUS_LABEL: Record<Status, string> = {
   connecting: 'Connecting',
@@ -151,6 +156,19 @@ export default function App() {
             onCtrlConsumed={() => setCtrlArmed(false)}
           />
         </div>
+        {/*
+          Review and Files mount on demand and unmount when hidden, unlike the
+          terminal. They hold no connection worth preserving, and remounting
+          Review is how it re-reads status after you have been away in the
+          terminal making changes.
+        */}
+        <div className={`tab-panel ${tab === 'review' ? 'active' : ''}`}>
+          {tab === 'review' && (
+            <Suspense fallback={<div className="empty">Loading changes…</div>}>
+              <Review connection={connection} />
+            </Suspense>
+          )}
+        </div>
         <div className={`tab-panel ${tab === 'files' ? 'active' : ''}`}>
           {tab === 'files' && (
             <Suspense fallback={<div className="empty">Loading editor…</div>}>
@@ -175,6 +193,13 @@ export default function App() {
           onClick={() => setTab('terminal')}
         >
           Terminal
+        </button>
+        <button
+          type="button"
+          className={tab === 'review' ? 'active' : ''}
+          onClick={() => setTab('review')}
+        >
+          Review
         </button>
         <button
           type="button"

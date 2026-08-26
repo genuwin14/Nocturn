@@ -610,3 +610,201 @@ code {
   padding: 4px 12px 8px;
   text-align: center;
 }
+
+/* --- review --------------------------------------------------------------- */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.review-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.review-branch {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.review-track {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* The path is the long thing in the bar, so it takes the slack and elides from
+   the left — the end of a path identifies a file, the start of one does not. */
+.review-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: right;
+}
+
+/* Only a trailing control takes the slack. In the detail view the link is the
+   leading "‹ Changes" and must stay hard left, while the path takes it. */
+.review-bar .link:last-child {
+  margin-left: auto;
+}
+
+.change-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+}
+
+.change-list li {
+  border-bottom: 1px solid var(--border);
+}
+
+.change-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 12px;
+  text-align: left;
+  min-width: 0;
+}
+
+.change-mark {
+  color: var(--text-dim);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.change-mark.on {
+  color: var(--accent);
+}
+
+.change-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-from {
+  color: var(--text-dim);
+}
+
+.change-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.change-state {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.change-count {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* --- diff ----------------------------------------------------------------- */
+
+.diff {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 6px 0;
+}
+
+/* Diff lines do not wrap. A wrapped diff loses the column alignment that makes
+   it readable, so the pane scrolls sideways instead. */
+.diff-line {
+  white-space: pre;
+  padding: 0 12px;
+  min-width: max-content;
+}
+
+.diff-line.add {
+  background: rgba(158, 206, 106, 0.12);
+  color: var(--ok);
+}
+.diff-line.del {
+  background: rgba(247, 118, 142, 0.12);
+  color: var(--error);
+}
+.diff-line.hunk {
+  color: var(--accent);
+  background: rgba(122, 162, 247, 0.08);
+}
+.diff-line.meta {
+  color: var(--text-dim);
+}
+
+.review-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.review-actions button {
+  flex: 1;
+  padding: 10px;
+  font-size: 14px;
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text);
+}
+.review-actions button:disabled {
+  opacity: 0.4;
+}
+.review-actions .primary {
+  background: var(--accent);
+  color: #0b0d10;
+  font-weight: 600;
+}
+.review-actions .danger {
+  color: var(--error);
+}
+
+.commit-box {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.commit-box input {
+  flex: 1;
+  min-width: 0;
+}
+
+.empty-detail {
+  margin-top: 6px;
+  font-size: 12px;
+}

@@ -51,6 +51,38 @@ export interface FileContent {
   truncated: boolean;
 }
 
+export interface GitFile {
+  path: string;
+  original_path?: string;
+  /** Porcelain codes: M A D R C T, or "." for unchanged. */
+  staged: string;
+  unstaged: string;
+  untracked: boolean;
+  conflicted: boolean;
+  /** Absent for untracked files and binaries; see `binary`. */
+  added?: number;
+  removed?: number;
+  binary: boolean;
+}
+
+export interface GitStatus {
+  /** False when the root is not a usable repository; `reason` says why. */
+  repo: boolean;
+  reason?: string;
+  branch?: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  files: GitFile[];
+}
+
+export interface GitDiff {
+  patch: string;
+  /** Cut at a line boundary; never offer to act on a truncated patch. */
+  truncated: boolean;
+  staged: boolean;
+}
+
 const STORAGE_KEY = 'nocturn.connection';
 
 /**
@@ -159,6 +191,33 @@ export const writeFile = (c: Connection, path: string, content: string) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, content }),
   });
+
+export const gitStatus = (c: Connection) => request<GitStatus>(c, '/api/git/status');
+
+export const gitDiff = (c: Connection, path: string, staged: boolean) =>
+  request<GitDiff>(
+    c,
+    `/api/git/diff?path=${encodeURIComponent(path)}&staged=${staged}`,
+  );
+
+const gitPost = <T>(c: Connection, path: string, body: unknown) =>
+  request<T>(c, path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+export const gitStage = (c: Connection, paths: string[]) =>
+  gitPost<{ paths: string[] }>(c, '/api/git/stage', { paths });
+
+export const gitUnstage = (c: Connection, paths: string[]) =>
+  gitPost<{ paths: string[] }>(c, '/api/git/unstage', { paths });
+
+export const gitDiscard = (c: Connection, paths: string[]) =>
+  gitPost<{ paths: string[] }>(c, '/api/git/discard', { paths });
+
+export const gitCommit = (c: Connection, message: string) =>
+  gitPost<{ sha: string; summary: string }>(c, '/api/git/commit', { message });
 
 /**
  * Opens a terminal socket.

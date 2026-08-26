@@ -62,6 +62,15 @@ pub struct FileStatus {
     unstaged: String,
     untracked: bool,
     conflicted: bool,
+    /// Lines added and removed against HEAD, staged and unstaged combined —
+    /// which is what "what changed since the last commit" means to someone
+    /// reviewing. Absent for untracked files, which have nothing to diff
+    /// against, and for binary files, which have no line counts at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    added: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    removed: Option<u64>,
+    binary: bool,
 }
 
 #[derive(Serialize)]
@@ -272,7 +281,63 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<RepoStatus>, A
     )
     .await?;
 
-    Ok(Json(parse_status(&raw)))
+    let mut status = parse_status(&raw);
+
+    // Change sizes, so the list can be triaged without opening every file —
+    // on a phone, knowing which of fourteen changes is the big one is most of
+    // the value. Against HEAD, so staged and unstaged are counted together.
+    //
+    // Best effort: a repository with no commits has no HEAD to diff against,
+    // and a status without counts is far better than no status at all.
+    if let Ok(raw) = git(&top, &["diff", "HEAD", "--numstat", "-z"]).await {
+        apply_numstat(&mut status, &raw);
+    }
+
+    Ok(Json(status))
+}
+
+/// Merges `git diff --numstat -z` counts into an already-parsed status.
+///
+/// Records are `<added>\t<removed>\t<path>` terminated by NUL. A rename leaves
+/// the path field empty and follows with two more NUL fields, the source and
+/// destination — the destination is the one the status list is keyed by.
+/// Binary files report `-` for both counts rather than a number.
+fn apply_numstat(status: &mut RepoStatus, data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    let fields: Vec<&str> = text.split('\0').collect();
+
+    let mut i = 0;
+    while i < fields.len() {
+        let record = fields[i];
+        i += 1;
+
+        let mut parts = record.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+
+        let path = if path.is_empty() {
+            // A rename: skip the source, take the destination.
+            let destination = fields.get(i + 1).copied().unwrap_or("");
+            i += 2;
+            destination
+        } else {
+            path
+        };
+
+        let Some(file) = status.files.iter_mut().find(|f| f.path == path) else {
+            continue;
+        };
+
+        if added == "-" || removed == "-" {
+            file.binary = true;
+        } else {
+            file.added = added.parse().ok();
+            file.removed = removed.parse().ok();
+        }
+    }
 }
 
 /// Parses `git status --porcelain=v2 -z` output.
@@ -351,6 +416,9 @@ fn parse_status(data: &[u8]) -> RepoStatus {
                 unstaged: ".".to_string(),
                 untracked: true,
                 conflicted: false,
+                added: None,
+                removed: None,
+                binary: false,
             });
         }
     }
@@ -398,6 +466,9 @@ fn file_status(
         unstaged: unstaged.to_string(),
         untracked: false,
         conflicted,
+        added: None,
+        removed: None,
+        binary: false,
     }
 }
 
@@ -664,6 +735,51 @@ mod tests {
         let parsed = parse_status(raw.as_bytes());
         assert!(parsed.files[0].conflicted);
         assert_eq!(parsed.files[0].path, "both.rs");
+    }
+
+    #[test]
+    fn numstat_counts_are_merged_onto_matching_files() {
+        let mut status = parse_status(
+            "1 .M N... 100644 100644 100644 aaa bbb src/main.rs\0\
+             1 .M N... 100644 100644 100644 ccc ddd logo.png\0"
+                .as_bytes(),
+        );
+        apply_numstat(
+            &mut status,
+            "12\t3\tsrc/main.rs\0-\t-\tlogo.png\0".as_bytes(),
+        );
+
+        let main = status.files.iter().find(|f| f.path == "src/main.rs").unwrap();
+        assert_eq!(main.added, Some(12));
+        assert_eq!(main.removed, Some(3));
+        assert!(!main.binary);
+
+        // Binary files report "-" for both counts, which is not zero and must
+        // not be shown as though it were.
+        let logo = status.files.iter().find(|f| f.path == "logo.png").unwrap();
+        assert!(logo.binary);
+        assert_eq!(logo.added, None);
+    }
+
+    #[test]
+    fn numstat_reads_a_rename_from_its_trailing_fields() {
+        // A rename leaves the path empty and follows with source then
+        // destination; the destination is what the status list is keyed by.
+        let mut status = parse_status(
+            "2 R. N... 100644 100644 100644 aaa bbb R100 new.rs\0old.rs\0\
+             1 .M N... 100644 100644 100644 ccc ddd after.rs\0"
+                .as_bytes(),
+        );
+        let numstat = ["4\t2\t", "old.rs", "new.rs", "7\t1\tafter.rs", ""].join("\0");
+        apply_numstat(&mut status, numstat.as_bytes());
+
+        let renamed = status.files.iter().find(|f| f.path == "new.rs").unwrap();
+        assert_eq!(renamed.added, Some(4));
+        assert_eq!(renamed.removed, Some(2));
+
+        // The record after a rename must still be consumed correctly.
+        let after = status.files.iter().find(|f| f.path == "after.rs").unwrap();
+        assert_eq!(after.added, Some(7));
     }
 
     #[test]

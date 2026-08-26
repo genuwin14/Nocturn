@@ -146,6 +146,107 @@ try {
 
   await page.screenshot({ path: `${OUT}/05-editor.png` });
 
+  // --- review tab ---
+  // Give it something to find. The daemon's own file API is the shortest way
+  // to make a change without driving the terminal and waiting on a shell.
+  await fetch(`${URL}api/fs/write`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: 'readme.txt', content: 'hello from nocturn\nreviewed\n' }),
+  });
+
+  await page.evaluate(() => {
+    const tab = [...document.querySelectorAll('.tab-bar button')].find((b) => b.textContent === 'Review');
+    tab?.click();
+  });
+
+  // Wait for the component itself, not for `.empty` — the Suspense fallback
+  // while the chunk loads is also an `.empty`, so matching that would race the
+  // real content and read an empty list every time.
+  await page.waitForSelector('.review, .tab-panel.active .empty', { timeout: 10000 });
+  await page.waitForFunction(
+    () => {
+      const review = document.querySelector('.review');
+      if (!review) return false;
+      return (
+        review.querySelector('.change-row') !== null ||
+        (review.textContent ?? '').includes('Nothing changed') ||
+        (review.textContent ?? '').includes('No repository')
+      );
+    },
+    { timeout: 10000 },
+  );
+  const repoState = await page.evaluate(
+    () => document.querySelector('.review')?.textContent ?? '',
+  );
+
+  if (!repoState.includes('No repository')) {
+    const changed = await page.$$eval('.change-path', (els) => els.map((e) => e.textContent));
+    check('review lists the changed file', changed.some((p) => p?.includes('readme.txt')),
+      changed.join(', '));
+
+    const counts = await page.$$eval('.change-count', (els) => els.map((e) => e.textContent));
+    check('review shows a change size for triage',
+      counts.some((c) => /[+−]\d/.test(c ?? '') || c === 'new'), counts.join(', '));
+
+    await page.screenshot({ path: `${OUT}/06-review-list.png` });
+
+    await page.evaluate(() => {
+      const row = [...document.querySelectorAll('.change-row')]
+        .find((r) => r.textContent?.includes('readme.txt'));
+      row?.click();
+    });
+    await page.waitForSelector('.diff-line', { timeout: 10000 });
+
+    const diff = await page.evaluate(() => ({
+      added: [...document.querySelectorAll('.diff-line.add')].map((e) => e.textContent),
+      hunks: document.querySelectorAll('.diff-line.hunk').length,
+    }));
+    check('the diff renders added lines and a hunk header',
+      diff.added.some((l) => l?.includes('reviewed')) && diff.hunks > 0,
+      `${diff.added.length} additions, ${diff.hunks} hunks`);
+
+    await page.screenshot({ path: `${OUT}/07-review-diff.png` });
+
+    // Staging is the one round trip worth driving: it proves the client and
+    // daemon agree on the shape, and that the list re-reads afterwards.
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.review-actions button')]
+        .find((b) => b.textContent === 'Stage');
+      btn?.click();
+    });
+    await page.waitForFunction(
+      () => !![...document.querySelectorAll('.review-actions button')]
+        .find((b) => b.textContent === 'Unstage'),
+      { timeout: 10000 },
+    );
+    check('staging a file flips it to unstageable', true);
+
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.review-actions button')]
+        .find((b) => b.textContent === 'Unstage');
+      btn?.click();
+    });
+    await page.waitForFunction(
+      () => !![...document.querySelectorAll('.review-actions button')]
+        .find((b) => b.textContent === 'Stage'),
+      { timeout: 10000 },
+    );
+    check('unstaging puts it back', true);
+  } else {
+    console.log('SKIP  review checks — the daemon root is not a git repository');
+  }
+
+  // Put readme.txt back. These checks are the only ones here that mutate the
+  // root, and leaving it dirty makes the wire suite's "fs read returns file
+  // content" fail depending on which ran last — a test that breaks another
+  // test by running is worse than no test.
+  await fetch(`${URL}api/fs/write`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: 'readme.txt', content: 'hello from nocturn\n' }),
+  });
+
   check('no uncaught errors in the console', consoleErrors.length === 0,
     consoleErrors.slice(0, 3).join(' | '));
 
