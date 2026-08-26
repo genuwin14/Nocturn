@@ -20,6 +20,11 @@ const DIALECT = {
     // PowerShell takes a second or two to reach a prompt.
     warmupMs: 2500,
     ticks: '1..10 | %{ "TICK$_"; Start-Sleep -Milliseconds 700 }',
+    // Finishes immediately, so the session falls quiet at a prompt.
+    quick: 'echo NOCTURN_DONE',
+    // Prints a question and blocks on input, so the session falls quiet
+    // somewhere that is not a prompt.
+    blocking: 'Read-Host "Enter passphrase"',
     traversal: '../../../../Windows/win.ini',
     absolute: 'C:/Windows/win.ini',
     // PSReadLine asks for the cursor position at startup and blocks until a
@@ -30,6 +35,9 @@ const DIALECT = {
   posix: {
     warmupMs: 1000,
     ticks: 'for i in 1 2 3 4 5 6 7 8 9 10; do echo TICK$i; sleep 0.7; done',
+    quick: 'echo NOCTURN_DONE',
+    // printf rather than read -p, which is a bashism.
+    blocking: 'printf "Enter passphrase: "; read _x',
     traversal: '../../../../etc/passwd',
     absolute: '/etc/passwd',
     expectsDsr: false,
@@ -144,6 +152,70 @@ async function main() {
     missedTicks.length === 3, `found TICK${missedTicks.join(', TICK')} in ${replayed}-byte replay`);
   check('reattached client also sees TICK1 from before the disconnect',
     second.text.includes('TICK1'));
+
+  // --- activity signal ---
+  // The daemon infers what a session is doing from its output stream, so a
+  // client can tell a shell that is working from one sitting at a prompt —
+  // and, critically, from one blocked on a question. An agent stopped on a
+  // permission request looks exactly like an agent still thinking, and
+  // nothing progresses until a person answers it.
+  //
+  // IDLE_AFTER in the daemon is 3s; allow for that plus the poll interval.
+  const SETTLE_MS = 4500;
+
+  const idleRun = await attach('activity-idle', DIALECT.warmupMs + SETTLE_MS, async (ws) => {
+    await sleep(DIALECT.warmupMs);
+    send(ws, `${DIALECT.quick}\r`);
+  });
+  const idleStates = idleRun.control.filter((m) => m.type === 'state');
+
+  check('ready reports an activity state',
+    ['working', 'idle', 'waiting'].includes(idleRun.ready?.state),
+    `state=${idleRun.ready?.state}`);
+
+  const settledIdle = idleStates.filter((s) => s.state === 'idle').pop();
+  check('a finished command settles to idle', !!settledIdle,
+    `saw ${idleStates.map((s) => s.state).join(' -> ') || 'no transitions'}`);
+  check('idle reports the prompt line as its tail',
+    !!settledIdle && /[$#>%]$/.test(settledIdle.tail.trim()),
+    settledIdle ? JSON.stringify(settledIdle.tail) : '');
+
+  const listedIdle = await fetch(`${BASE}/api/sessions`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+  }).then((r) => r.json());
+  check('session list reports state without attaching',
+    listedIdle.find((s) => s.id === 'activity-idle')?.state === 'idle',
+    `state=${listedIdle.find((s) => s.id === 'activity-idle')?.state}`);
+
+  // Now the case the whole signal exists for.
+  const waitRun = await attach('activity-wait', DIALECT.warmupMs + SETTLE_MS, async (ws) => {
+    await sleep(DIALECT.warmupMs);
+    send(ws, `${DIALECT.blocking}\r`);
+  });
+  const settledWaiting = waitRun.control
+    .filter((m) => m.type === 'state')
+    .filter((s) => s.state === 'waiting')
+    .pop();
+
+  check('a shell blocked on input settles to waiting, not idle', !!settledWaiting,
+    `saw ${waitRun.control.filter((m) => m.type === 'state').map((s) => s.state).join(' -> ')
+      || 'no transitions'}`);
+  check('waiting reports the question it is blocked on',
+    !!settledWaiting && /passphrase/i.test(settledWaiting.tail),
+    settledWaiting ? JSON.stringify(settledWaiting.tail) : '');
+
+  // A reattaching client must learn it is mid-question without waiting for a
+  // transition that already happened.
+  const rejoined = await attach('activity-wait', 500);
+  check('reattaching mid-question reports waiting in ready',
+    rejoined.ready?.state === 'waiting', `state=${rejoined.ready?.state}`);
+
+  for (const id of ['activity-idle', 'activity-wait']) {
+    await fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+  }
 
   // --- file API ---
   const auth = { Authorization: `Bearer ${TOKEN}` };

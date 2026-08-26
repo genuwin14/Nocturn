@@ -100,6 +100,10 @@ async fn run(socket: WebSocket, params: AttachParams, state: AppState) -> anyhow
         rows,
         replayed,
         alive: session.is_alive(),
+        // A client reattaching mid-run needs to know it is mid-run. Without
+        // this it would look idle until the next transition, which for a long
+        // build could be many minutes away.
+        state: session.activity(),
     };
     ws_tx.send(Message::Text(ready.json().into())).await?;
 
@@ -158,6 +162,9 @@ async fn pump_output(
             chunk = rx.recv() => match chunk {
                 Ok(Chunk::Data(data)) => Message::Binary(data),
                 Ok(Chunk::Exit(code)) => Message::Text(ServerMsg::Exit { code }.json().into()),
+                Ok(Chunk::State { state, since, tail }) => {
+                    Message::Text(ServerMsg::State { state, since, tail }.json().into())
+                }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     // The client could not keep up with a burst of output. It
                     // has a hole in its stream; say so rather than pretending

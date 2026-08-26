@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::session::Activity;
+
 /// Control messages sent by the client.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -29,6 +31,20 @@ pub enum ServerMsg {
         replayed: usize,
         /// False when attaching to a session whose child already exited.
         alive: bool,
+        /// Whether the shell is working, idle, or blocked on input. Sent here
+        /// so a reattaching client knows without waiting for a transition.
+        state: Activity,
+    },
+    /// The shell moved between working, idle, and waiting. Travels in the same
+    /// channel as output, so it can never overtake the bytes that caused it.
+    State {
+        state: Activity,
+        /// Unix seconds at which this state was entered.
+        since: u64,
+        /// Last non-empty line of output, ANSI stripped and truncated. Lets a
+        /// client show *what* is being waited on rather than only that
+        /// something is. Empty for `working`.
+        tail: String,
     },
     /// The child process exited. The session stays in the table (with its
     /// scrollback intact) until explicitly deleted.
