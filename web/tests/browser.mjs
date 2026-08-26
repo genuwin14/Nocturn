@@ -327,8 +327,96 @@ try {
     body: JSON.stringify({ path: 'readme.txt', content: 'hello from nocturn\n' }),
   });
 
+  // --- switching project ---
+  //
+  // Skips itself against a single-root daemon, the same way the review checks
+  // skip a root that is not a repository. Start it with a second --root to
+  // exercise this.
+  await page.evaluate(() => {
+    document.querySelector('.session-button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await page.waitForSelector('.sheet', { timeout: 10000 });
+
+  const chips = await page.$$eval('.root-chip', (els) =>
+    els.map((e) => e.firstChild?.textContent?.trim() ?? ''),
+  );
+
+  if (chips.length > 1) {
+    check('the sheet offers a chip per project', chips.length > 1, chips.join(', '));
+
+    const firstPath = await page.$eval('.root-path', (el) => el.textContent ?? '');
+
+    // Switching leaves the sheet open — the list under it is now the other
+    // project's, which is usually the next thing you want.
+    await page.evaluate((name) => {
+      const chip = [...document.querySelectorAll('.root-chip')]
+        .find((c) => c.firstChild?.textContent?.trim() === name);
+      chip?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    }, chips[1]);
+    await page.waitForFunction(
+      (before) => document.querySelector('.root-path')?.textContent !== before,
+      { timeout: 10000 },
+      firstPath,
+    );
+
+    const stillOpen = await page.$('.sheet');
+    check('switching project keeps the sheet open and names the directory',
+      !!stillOpen, await page.$eval('.root-path', (el) => el.textContent ?? ''));
+
+    await page.screenshot({ path: `${OUT}/09-roots.png` });
+
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.sheet-header button')]
+        .find((b) => b.textContent === 'Done');
+      btn?.click();
+    });
+    await page.waitForFunction(() => !document.querySelector('.sheet'), { timeout: 10000 });
+
+    // Without this the header says "main" in both projects, which is the whole
+    // reason session names are scoped to their root.
+    const header = await page.$eval('.root-name', (el) => el.textContent ?? '').catch(() => '');
+    check('the header names the project once there is more than one',
+      header.replace('/', '') === chips[1], JSON.stringify(header));
+
+    // The Files tab has to follow. It is keyed by root, so this is also a check
+    // that it rebuilt rather than kept the previous project's path on screen.
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.tab-bar button')]
+        .find((b) => b.textContent === 'Files');
+      btn?.click();
+    });
+    await page.waitForSelector('.file-list .file-name', { timeout: 15000 });
+    await sleep(300);
+    const otherFiles = await page.$$eval('.file-list .file-name', (els) =>
+      els.map((e) => e.textContent ?? ''),
+    );
+    check('the file browser follows the selected project',
+      !otherFiles.includes('readme.txt'), otherFiles.join(', '));
+
+    // Back, so the checks after this see the daemon as they expect it.
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.tab-bar button')]
+        .find((b) => b.textContent === 'Terminal');
+      btn?.click();
+    });
+    await page.evaluate(() => {
+      document.querySelector('.session-button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await page.waitForSelector('.root-picker', { timeout: 10000 });
+    await page.evaluate((name) => {
+      const chip = [...document.querySelectorAll('.root-chip')]
+        .find((c) => c.firstChild?.textContent?.trim() === name);
+      chip?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    }, chips[0]);
+    await sleep(300);
+  } else {
+    console.log('SKIP  project switching — the daemon serves a single root');
+  }
+
   // --- devices ---
   await page.evaluate(() => {
+    const sheet = document.querySelector('.sheet');
+    if (sheet) return;
     document.querySelector('.session-button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
   await page.waitForSelector('.sheet', { timeout: 10000 });

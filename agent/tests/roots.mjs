@@ -61,6 +61,16 @@ function ready(session, root) {
 }
 
 async function main() {
+  // A previous run left written.txt staged in beta, which would make the
+  // untracked assertion below fail on every run after the first. Put it back
+  // to untracked rather than asserting on whichever state happens to be there
+  // — a test that only passes the first time is not testing anything.
+  await fetch(`${BASE}/api/git/unstage`, {
+    method: 'POST',
+    headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ root: 'beta', paths: ['written.txt'] }),
+  }).catch(() => {});
+
   // --- the listing -----------------------------------------------------------
 
   const roots = await getJson('/api/roots');

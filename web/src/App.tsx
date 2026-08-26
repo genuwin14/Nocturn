@@ -5,10 +5,12 @@ import { Setup } from './Setup';
 import { Sessions } from './Sessions';
 import {
   clearConnection,
+  listRoots,
   loadConnection,
   saveConnection,
   type Activity,
   type Connection,
+  type Root,
 } from './api';
 import './styles.css';
 
@@ -44,6 +46,11 @@ const ACTIVITY_LABEL: Record<Activity, string> = {
 export default function App() {
   const [connection, setConnection] = useState<Connection | null>(loadConnection);
   const [tab, setTab] = useState<Tab>('terminal');
+  const [roots, setRoots] = useState<Root[]>([]);
+  // Undefined until the list arrives, and left that way against a daemon with
+  // no roots endpoint. Every call treats an absent root as "the default one",
+  // so the app works either way rather than waiting on this.
+  const [root, setRoot] = useState<string>();
   const [session, setSession] = useState('main');
   const [showSessions, setShowSessions] = useState(false);
   const [showDevices, setShowDevices] = useState(false);
@@ -79,6 +86,27 @@ export default function App() {
     clearConnection();
     setConnection(null);
   };
+
+  // Which projects this daemon serves. Read once — roots are fixed at startup,
+  // so there is nothing to poll for.
+  useEffect(() => {
+    if (!connection) return;
+    let live = true;
+    listRoots(connection)
+      .then((list) => {
+        if (!live || list.length === 0) return;
+        setRoots(list);
+        setRoot((current) => current ?? (list.find((r) => r.default) ?? list[0]).name);
+      })
+      .catch(() => {
+        // An older daemon has no /api/roots. Leaving the root unset makes every
+        // request fall through to its single configured one, which is exactly
+        // the behaviour that daemon has.
+      });
+    return () => {
+      live = false;
+    };
+  }, [connection]);
 
   // The on-screen keyboard shrinks the visual viewport without changing the
   // layout viewport, which would otherwise leave the key bar hidden behind it.
@@ -130,6 +158,13 @@ export default function App() {
           onClick={() => setShowSessions(true)}
         >
           <span className={`status-dot ${indicator}`} />
+          {/*
+            The project, but only when there is more than one — the name is
+            redundant on a single-root daemon and the header has no width to
+            spare. Session names are scoped to their root, so without this
+            "main" would not say which shell you are looking at.
+          */}
+          {roots.length > 1 && root && <span className="root-name">{root}/</span>}
           <span className="session-name">{session}</span>
           <span className="chevron">▾</span>
         </button>
@@ -160,6 +195,7 @@ export default function App() {
             ref={terminalRef}
             connection={connection}
             session={session}
+            root={root}
             onStatusChange={onStatusChange}
             onActivityChange={onActivityChange}
             onSelectionChange={onSelectionChange}
@@ -173,17 +209,22 @@ export default function App() {
           Review is how it re-reads status after you have been away in the
           terminal making changes.
         */}
+        {/*
+          Keyed by root, so switching project rebuilds them rather than leaving
+          a path or a selected file from somewhere else on screen. Their state
+          is entirely about one project's tree, and none of it survives the move.
+        */}
         <div className={`tab-panel ${tab === 'review' ? 'active' : ''}`}>
           {tab === 'review' && (
             <Suspense fallback={<div className="empty">Loading changes…</div>}>
-              <Review connection={connection} />
+              <Review key={root} connection={connection} root={root} />
             </Suspense>
           )}
         </div>
         <div className={`tab-panel ${tab === 'files' ? 'active' : ''}`}>
           {tab === 'files' && (
             <Suspense fallback={<div className="empty">Loading editor…</div>}>
-              <Files connection={connection} />
+              <Files key={root} connection={connection} root={root} />
             </Suspense>
           )}
         </div>
@@ -248,8 +289,17 @@ export default function App() {
       {showSessions && (
         <Sessions
           connection={connection}
+          roots={roots}
+          root={root}
           current={session}
-          onSelect={(id) => {
+          // Switching project leaves the sheet open: the list below it is now
+          // that project's, which is usually the next thing you want to look at.
+          onSelectRoot={(name, landing) => {
+            setRoot(name);
+            setSession(landing);
+          }}
+          onSelect={(id, from) => {
+            if (from) setRoot(from);
             setSession(id);
             setShowSessions(false);
             setTab('terminal');

@@ -17,6 +17,8 @@ import {
 
 interface Props {
   connection: Connection;
+  /** Which project to browse. Absent means the daemon's default root. */
+  root?: string;
 }
 
 function languageFor(path: string): Extension[] {
@@ -47,7 +49,7 @@ function breadcrumbs(path: string): { name: string; path: string }[] {
   return crumbs;
 }
 
-export function Files({ connection }: Props) {
+export function Files({ connection, root }: Props) {
   const [dir, setDir] = useState('');
   const [entries, setEntries] = useState<Entry[]>([]);
   const [open, setOpen] = useState<FileContent | null>(null);
@@ -64,7 +66,7 @@ export function Files({ connection }: Props) {
       setBusy(true);
       setError(null);
       try {
-        const listing = await listFiles(connection, path);
+        const listing = await listFiles(connection, path, root);
         setEntries(listing.entries);
         setDir(listing.path);
       } catch (e) {
@@ -73,7 +75,7 @@ export function Files({ connection }: Props) {
         setBusy(false);
       }
     },
-    [connection],
+    [connection, root],
   );
 
   useEffect(() => {
@@ -88,7 +90,7 @@ export function Files({ connection }: Props) {
     setBusy(true);
     setError(null);
     try {
-      const file = await readFile(connection, entry.path);
+      const file = await readFile(connection, entry.path, root);
       setOpen(file);
       setDirty(false);
     } catch (e) {
@@ -142,7 +144,7 @@ export function Files({ connection }: Props) {
     setError(null);
     try {
       const content = view.state.doc.toString();
-      const result = await writeFile(connection, open.path, content);
+      const result = await writeFile(connection, open.path, content, root);
       setDirty(false);
       setNotice(`Saved ${formatSize(result.bytes)} to ${result.path}`);
       window.setTimeout(() => setNotice(null), 3000);

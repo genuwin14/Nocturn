@@ -48,6 +48,11 @@ export interface TerminalHandle {
 interface Props {
   connection: Connection;
   session: string;
+  /**
+   * Which project the session belongs to. Session names are scoped to their
+   * root, so this is what makes `main` a different shell in each one.
+   */
+  root?: string;
   onStatusChange?: (status: Status, detail?: string) => void;
   /**
    * Reports what the shell is doing, with the last line of output when it is
@@ -93,6 +98,7 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
     {
       connection,
       session,
+      root,
       onStatusChange,
       onActivityChange,
       onSelectionChange,
@@ -248,7 +254,7 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
         term.reset();
 
         fit.fit();
-        const socket = openTerminal(connection, session, term.cols, term.rows);
+        const socket = openTerminal(connection, session, term.cols, term.rows, root);
         socketRef.current = socket;
 
         socket.onopen = () => {
@@ -317,7 +323,7 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
         socketRef.current?.close();
         socketRef.current = null;
       };
-    }, [connection, session, report]);
+    }, [connection, session, root, report]);
 
     // --- input --------------------------------------------------------------
 

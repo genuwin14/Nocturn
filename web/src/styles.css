@@ -122,6 +122,21 @@ code {
   background: var(--bg-input);
 }
 
+/* Dimmer and lighter than the session name beside it: it is context for the
+   name, not the thing you are reading. */
+.root-name {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-dim);
+  /* Cancels the button's gap exactly, so "project/session" reads as one path
+     rather than two words with a slash between them. */
+  margin-right: -8px;
+  max-width: 10ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-name {
   font-weight: 600;
   font-size: 14px;
@@ -599,6 +614,68 @@ code {
 .sheet-header h2 {
   margin: 0;
   font-size: 16px;
+}
+
+/* Scrolls sideways rather than wrapping. A daemon can serve a dozen projects,
+   and a wrapping row would push the session list off a phone screen. */
+.root-picker {
+  display: flex;
+  gap: 6px;
+  padding: 2px 16px 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.root-picker::-webkit-scrollbar {
+  display: none;
+}
+
+.root-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.root-chip.current {
+  background: rgba(122, 162, 247, 0.14);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.root-chip-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+}
+.root-chip.current .root-chip-count {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* The directory behind the selected name. Small, and truncated from the left,
+   since the tail of a path is the part that identifies it. */
+.root-path {
+  margin: 0;
+  padding: 0 16px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.root-note {
+  color: var(--warn);
 }
 
 .session-list li {

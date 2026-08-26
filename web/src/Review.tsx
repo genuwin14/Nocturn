@@ -25,6 +25,8 @@ import {
 
 interface Props {
   connection: Connection;
+  /** Which project's changes to show. Status is per-root. */
+  root?: string;
 }
 
 /** Whether a file has anything in the index, and so is part of a commit. */
@@ -64,7 +66,7 @@ function lineKind(line: string): string {
   return 'ctx';
 }
 
-export function Review({ connection }: Props) {
+export function Review({ connection, root }: Props) {
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [patch, setPatch] = useState<string | null>(null);
@@ -76,12 +78,12 @@ export function Review({ connection }: Props) {
 
   const refresh = useCallback(async () => {
     try {
-      setStatus(await gitStatus(connection));
+      setStatus(await gitStatus(connection, root));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [connection]);
+  }, [connection, root]);
 
   useEffect(() => {
     void refresh();
@@ -94,7 +96,7 @@ export function Review({ connection }: Props) {
     setPatch(null);
     setError(null);
     try {
-      const result = await gitDiff(connection, file.path, isStaged(file));
+      const result = await gitDiff(connection, file.path, isStaged(file), root);
       setPatch(result.patch);
       setPatchTruncated(result.truncated);
     } catch (e) {
@@ -126,7 +128,7 @@ export function Review({ connection }: Props) {
       `Throw away all changes to ${file.path}?\n\nThis cannot be undone. Type the file name to confirm.`,
     );
     if (typed !== file.path) return;
-    void act(() => gitDiscard(connection, [file.path]), () => {
+    void act(() => gitDiscard(connection, [file.path], root), () => {
       setSelected(null);
       setPatch(null);
     });
@@ -137,7 +139,7 @@ export function Review({ connection }: Props) {
     if (!text) return;
     void act(
       async () => {
-        const result = await gitCommit(connection, text);
+        const result = await gitCommit(connection, text, root);
         setNote(`Committed ${result.summary}`);
       },
       () => {
@@ -210,7 +212,7 @@ export function Review({ connection }: Props) {
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void act(() => gitUnstage(connection, [file.path]))}
+                onClick={() => void act(() => gitUnstage(connection, [file.path], root))}
               >
                 Unstage
               </button>
@@ -219,7 +221,7 @@ export function Review({ connection }: Props) {
                 type="button"
                 className="primary"
                 disabled={busy || patchTruncated}
-                onClick={() => void act(() => gitStage(connection, [file.path]))}
+                onClick={() => void act(() => gitStage(connection, [file.path], root))}
               >
                 Stage
               </button>

@@ -18,8 +18,21 @@ export interface Connection {
  */
 export type Activity = 'working' | 'idle' | 'waiting';
 
+/** One project the daemon serves. */
+export interface Root {
+  name: string;
+  /** The directory on the host, for display only. */
+  path: string;
+  /** True for the one used when a request names none. */
+  default: boolean;
+  /** False means the Review tab has nothing to show for this root. */
+  repo: boolean;
+}
+
 export interface SessionInfo {
   id: string;
+  /** Which project the shell belongs to. Fixed when it was spawned. */
+  root: string;
   created_at: number;
   command: string;
   cwd: string;
@@ -40,11 +53,13 @@ export interface Entry {
 }
 
 export interface Listing {
+  root: string;
   path: string;
   entries: Entry[];
 }
 
 export interface FileContent {
+  root: string;
   path: string;
   content: string;
   size: number;
@@ -66,6 +81,7 @@ export interface GitFile {
 }
 
 export interface GitStatus {
+  root: string;
   /** False when the root is not a usable repository; `reason` says why. */
   repo: boolean;
   reason?: string;
@@ -212,26 +228,39 @@ export async function checkHealth(origin: string): Promise<boolean> {
   }
 }
 
+/**
+ * The `root=` every project-scoped call carries.
+ *
+ * Omitted rather than sent empty when there is no root yet — the daemon reads
+ * an absent root as "the default one", which is what a client that has not
+ * loaded the list should get.
+ */
+function scope(root: string | undefined): string {
+  return root ? `root=${encodeURIComponent(root)}&` : '';
+}
+
+export const listRoots = (c: Connection) => request<Root[]>(c, '/api/roots');
+
 export const listSessions = (c: Connection) =>
   request<SessionInfo[]>(c, '/api/sessions');
 
-export const deleteSession = (c: Connection, id: string) =>
-  fetch(`${c.origin}/api/sessions/${encodeURIComponent(id)}`, {
+export const deleteSession = (c: Connection, id: string, root?: string) =>
+  fetch(`${c.origin}/api/sessions/${encodeURIComponent(id)}?${scope(root)}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${c.token}` },
   });
 
-export const listFiles = (c: Connection, path: string) =>
-  request<Listing>(c, `/api/fs/list?path=${encodeURIComponent(path)}`);
+export const listFiles = (c: Connection, path: string, root?: string) =>
+  request<Listing>(c, `/api/fs/list?${scope(root)}path=${encodeURIComponent(path)}`);
 
-export const readFile = (c: Connection, path: string) =>
-  request<FileContent>(c, `/api/fs/read?path=${encodeURIComponent(path)}`);
+export const readFile = (c: Connection, path: string, root?: string) =>
+  request<FileContent>(c, `/api/fs/read?${scope(root)}path=${encodeURIComponent(path)}`);
 
-export const writeFile = (c: Connection, path: string, content: string) =>
-  request<{ path: string; bytes: number }>(c, '/api/fs/write', {
+export const writeFile = (c: Connection, path: string, content: string, root?: string) =>
+  request<{ root: string; path: string; bytes: number }>(c, '/api/fs/write', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, content }),
+    body: JSON.stringify({ root, path, content }),
   });
 
 export interface Device {
@@ -268,12 +297,13 @@ export const revokeDevice = (c: Connection, id: string) =>
     headers: { Authorization: `Bearer ${c.token}` },
   });
 
-export const gitStatus = (c: Connection) => request<GitStatus>(c, '/api/git/status');
+export const gitStatus = (c: Connection, root?: string) =>
+  request<GitStatus>(c, `/api/git/status?${scope(root)}`);
 
-export const gitDiff = (c: Connection, path: string, staged: boolean) =>
+export const gitDiff = (c: Connection, path: string, staged: boolean, root?: string) =>
   request<GitDiff>(
     c,
-    `/api/git/diff?path=${encodeURIComponent(path)}&staged=${staged}`,
+    `/api/git/diff?${scope(root)}path=${encodeURIComponent(path)}&staged=${staged}`,
   );
 
 const gitPost = <T>(c: Connection, path: string, body: unknown) =>
@@ -283,17 +313,17 @@ const gitPost = <T>(c: Connection, path: string, body: unknown) =>
     body: JSON.stringify(body),
   });
 
-export const gitStage = (c: Connection, paths: string[]) =>
-  gitPost<{ paths: string[] }>(c, '/api/git/stage', { paths });
+export const gitStage = (c: Connection, paths: string[], root?: string) =>
+  gitPost<{ paths: string[] }>(c, '/api/git/stage', { root, paths });
 
-export const gitUnstage = (c: Connection, paths: string[]) =>
-  gitPost<{ paths: string[] }>(c, '/api/git/unstage', { paths });
+export const gitUnstage = (c: Connection, paths: string[], root?: string) =>
+  gitPost<{ paths: string[] }>(c, '/api/git/unstage', { root, paths });
 
-export const gitDiscard = (c: Connection, paths: string[]) =>
-  gitPost<{ paths: string[] }>(c, '/api/git/discard', { paths });
+export const gitDiscard = (c: Connection, paths: string[], root?: string) =>
+  gitPost<{ paths: string[] }>(c, '/api/git/discard', { root, paths });
 
-export const gitCommit = (c: Connection, message: string) =>
-  gitPost<{ sha: string; summary: string }>(c, '/api/git/commit', { message });
+export const gitCommit = (c: Connection, message: string, root?: string) =>
+  gitPost<{ sha: string; summary: string }>(c, '/api/git/commit', { root, message });
 
 /**
  * Opens a terminal socket.
@@ -308,11 +338,16 @@ export function openTerminal(
   session: string,
   cols: number,
   rows: number,
+  root?: string,
 ): WebSocket {
   const url = new URL(connection.origin);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.pathname = '/ws/terminal';
   url.searchParams.set('session', session);
+  // Session names are scoped to their root, so this decides which shell
+  // `main` means. Only consulted when the session is being created; the
+  // `ready` frame reports the root an existing one already belongs to.
+  if (root) url.searchParams.set('root', root);
   url.searchParams.set('cols', String(cols));
   url.searchParams.set('rows', String(rows));
 

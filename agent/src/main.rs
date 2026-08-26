@@ -426,6 +426,13 @@ fn print_banner(
     // One line each, labelled, so which name reaches which directory is
     // readable rather than something to infer. The first is the default and
     // says so, since that is the one an unqualified request lands in.
+    let width = roots
+        .all()
+        .iter()
+        .map(|r| r.name.len())
+        .max()
+        .unwrap_or(0)
+        .max(11);
     for (i, root) in roots.all().iter().enumerate() {
         let label = if i == 0 { "roots" } else { "" };
         let default = if i == 0 && roots.all().len() > 1 {
@@ -434,7 +441,7 @@ fn print_banner(
             ""
         };
         println!(
-            "  {label:<11} {:<12} {}{default}",
+            "  {label:<11} {:<width$} {}{default}",
             root.name,
             root.display.display()
         );
