@@ -33,6 +33,10 @@ const KEEPALIVE: Duration = Duration::from_secs(30);
 /// which is the only task holding the sink half of the socket.
 const OUTBOUND_CAP: usize = 32;
 
+/// How long the writer gets to finish its closing handshake once the client has
+/// gone away. Bounded so a socket that will never drain cannot pin the task.
+const CLOSE_GRACE: Duration = Duration::from_secs(5);
+
 #[derive(Deserialize)]
 pub struct AttachParams {
     #[serde(default = "default_session")]
@@ -122,7 +126,17 @@ async fn run(socket: WebSocket, params: AttachParams, state: AppState) -> anyhow
     // untouched by this: it keeps running with no clients attached.
     tokio::select! {
         _ = &mut writer => reader.abort(),
-        _ = &mut reader => writer.abort(),
+        _ = &mut reader => {
+            // The reader ending means the client sent Close or the stream died.
+            // Its `out_tx` was dropped with it, so the writer's channel is
+            // already closed and it will break out of its loop and send the
+            // reciprocal Close frame on its own. Aborting it here instead would
+            // skip that frame, and the peer would see a 1006 abnormal closure
+            // rather than a clean shutdown.
+            if tokio::time::timeout(CLOSE_GRACE, &mut writer).await.is_err() {
+                writer.abort();
+            }
+        }
     }
 
     tracing::info!(session = %session.id, "client detached");

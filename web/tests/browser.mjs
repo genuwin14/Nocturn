@@ -1,11 +1,16 @@
 // Drives the built client in headless Chrome at phone dimensions, to confirm
 // it mounts, authenticates, attaches a terminal, and renders shell output.
+import { mkdirSync } from 'node:fs';
 import puppeteer from 'puppeteer-core';
 
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const URL = 'http://127.0.0.1:7071/';
 const TOKEN = 'test-token-abc123';
 const OUT = process.argv[2] ?? '.';
+
+// Screenshots land here, and git does not track empty directories — so on a
+// fresh clone this path does not exist and every screenshot call would throw.
+mkdirSync(OUT, { recursive: true });
 
 const results = [];
 function check(name, pass, detail = '') {
