@@ -11,6 +11,12 @@ Requires Node 22+ (for the built-in `WebSocket` global). No npm install.
 # terminal 1 — a throwaway root, a known token
 mkdir -p /tmp/nocturn-test/src
 echo "hello from nocturn" > /tmp/nocturn-test/readme.txt
+
+# The git checks skip themselves without this, saying so rather than failing.
+git -C /tmp/nocturn-test init -b main
+git -C /tmp/nocturn-test add -A
+git -C /tmp/nocturn-test commit -m "Initial"
+
 cargo run -- --root /tmp/nocturn-test --token test-token-abc123 --bind 127.0.0.1:7071
 
 # terminal 2
@@ -47,10 +53,22 @@ used for the confinement checks. Everything else is platform independent.
 - Ticks emitted while **zero clients are attached** are present in the scrollback
   replay on reattach — the core persistence guarantee. If this regresses, the
   product no longer does the one thing it exists for.
+- A session reports what it is *doing*, not only that it is alive: a finished
+  command settles to `idle` at a prompt, and a shell blocked on a question
+  settles to `waiting` carrying the question. The second is the one worth
+  having — an agent stopped on a permission prompt is otherwise
+  indistinguishable from one still thinking.
 - File list, read, and write round-trip.
 - Traversal is refused, and absolute paths are refused with 400 on every
   platform without leaking host file contents.
+- Git status, staging, and unstaging round-trip; `discard` refuses untracked
+  files rather than deleting something nothing can restore; and traversal is
+  refused through the git routes too, which reach the filesystem by a different
+  path than the file API and so have to be proved separately.
 - Session delete kills the shell and removes it from the listing.
+
+The git checks never commit. Pointing the suite at a repository you care about
+will leave it as it found it — the staged file is unstaged again on the way out.
 
 ## Verifying the Linux build from a Windows workstation
 

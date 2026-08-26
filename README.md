@@ -133,6 +133,29 @@ All routes except `/health` require the token, presented one of three ways:
 | `GET` | `/api/fs/list?path=` | Directory listing, root-relative. |
 | `GET` | `/api/fs/read?path=` | File contents (2 MiB cap, UTF-8 text only). |
 | `PUT` | `/api/fs/write` | `{"path":"…","content":"…"}` |
+| `GET` | `/api/git/status` | Branch, ahead/behind, and per-file staged/unstaged state. |
+| `GET` | `/api/git/diff?path=&staged=` | Unified diff, whole tree or one path (2 MiB cap). |
+| `POST` | `/api/git/stage` | `{"paths":[…]}` |
+| `POST` | `/api/git/unstage` | `{"paths":[…]}` |
+| `POST` | `/api/git/discard` | `{"paths":[…]}` — tracked files only; see below. |
+| `POST` | `/api/git/commit` | `{"message":"…"}`, commits what is staged. |
+
+### Reviewing, not operating
+
+The git routes exist to answer "what did the agent just change, and do I want
+to keep it." There is no push, no branching, and no conflict resolution,
+because none of those are things anyone wants to attempt on a touchscreen.
+
+Two refusals worth knowing about, both deliberate:
+
+- **`discard` will not delete untracked files.** Restoring a tracked file loses
+  work git can still find; deleting an untracked one loses it completely, with
+  no reflog and no object to recover from. A destructive action with no floor
+  under it does not belong behind a tap on a phone.
+- **A root *inside* a larger repository is refused**, and `/api/git/status`
+  reports why rather than erroring. Git reports and acts on paths relative to
+  the repository top level, so serving that arrangement would reach outside the
+  root — the exact boundary the file API spends its effort maintaining.
 
 ### WebSocket protocol
 

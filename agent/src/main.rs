@@ -7,6 +7,7 @@
 
 mod auth;
 mod fsapi;
+mod gitapi;
 mod protocol;
 mod session;
 mod ws;
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path as AxumPath, State},
-    routing::{delete, get, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use clap::Parser;
@@ -113,6 +114,12 @@ async fn main() -> Result<()> {
         .route("/api/fs/list", get(fsapi::list))
         .route("/api/fs/read", get(fsapi::read))
         .route("/api/fs/write", put(fsapi::write))
+        .route("/api/git/status", get(gitapi::status))
+        .route("/api/git/diff", get(gitapi::diff))
+        .route("/api/git/stage", post(gitapi::stage))
+        .route("/api/git/unstage", post(gitapi::unstage))
+        .route("/api/git/discard", post(gitapi::discard))
+        .route("/api/git/commit", post(gitapi::commit))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_token,

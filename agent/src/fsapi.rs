@@ -81,7 +81,8 @@ pub struct ErrorBody {
     error: String,
 }
 
-fn err(status: StatusCode, message: impl Into<String>) -> ApiError {
+/// Shared with `gitapi`, so both surfaces answer failures in the same shape.
+pub(crate) fn err(status: StatusCode, message: impl Into<String>) -> ApiError {
     (
         status,
         Json(ErrorBody {

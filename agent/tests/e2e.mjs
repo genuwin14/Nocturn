@@ -255,6 +255,80 @@ async function main() {
   check('absolute path did not leak host file contents',
     !absoluteBody.includes('root:x:0:0') && !absoluteBody.includes('[fonts]'));
 
+  // --- git review ---
+  // Deliberately non-destructive: these stage and unstage the file the file
+  // API block just created, and never commit. A suite that wrote a commit into
+  // whatever repository it was pointed at would be a bad houseguest.
+  const postJson = (path, body) =>
+    fetch(`${BASE}${path}`, {
+      method: 'POST',
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  const gitStatus = () => fetch(`${BASE}/api/git/status`, { headers: auth }).then((r) => r.json());
+
+  const repo = await gitStatus();
+
+  if (!repo.repo) {
+    // Not a failure. The root may legitimately not be a repository, and saying
+    // which is the whole contract of this endpoint.
+    check('a root without a usable repository explains why',
+      typeof repo.reason === 'string' && repo.reason.length > 0, repo.reason);
+    console.log(`SKIP  git review checks — ${repo.reason}`);
+    console.log('      run "git init" in the test root to exercise them');
+  } else {
+    check('git status reports the branch',
+      typeof repo.branch === 'string' && repo.branch.length > 0, `branch=${repo.branch}`);
+
+    const fresh = repo.files.find((f) => f.path === 'src/new-file.txt');
+    check('git status lists a newly written file as untracked',
+      !!fresh && fresh.untracked, fresh ? JSON.stringify(fresh) : 'not listed');
+
+    // The safety property this endpoint is built around. An untracked file has
+    // never been committed, so there is nothing to restore it from — deleting
+    // it is unrecoverable, and a tap on a phone must not be able to do that.
+    const refused = await postJson('/api/git/discard', { paths: ['src/new-file.txt'] });
+    const refusedBody = await refused.json();
+    check('discard refuses untracked files, which cannot be recovered',
+      refused.status === 400 && /untracked/i.test(refusedBody.error ?? ''),
+      `got ${refused.status}: ${refusedBody.error ?? ''}`);
+
+    const survived = await fetch(`${BASE}/api/fs/read?path=src/new-file.txt`, { headers: auth });
+    check('the refused file is still on disk', survived.status === 200, `got ${survived.status}`);
+
+    await postJson('/api/git/stage', { paths: ['src/new-file.txt'] });
+    const afterStage = await gitStatus();
+    check('stage moves a file into the index',
+      afterStage.files.find((f) => f.path === 'src/new-file.txt')?.staged === 'A',
+      JSON.stringify(afterStage.files.find((f) => f.path === 'src/new-file.txt')));
+
+    const stagedDiff = await fetch(`${BASE}/api/git/diff?staged=true`, { headers: auth })
+      .then((r) => r.json());
+    check('the staged diff carries the file and its content',
+      stagedDiff.patch.includes('src/new-file.txt') && stagedDiff.patch.includes('written by nocturn'),
+      `${stagedDiff.patch.length} bytes, truncated=${stagedDiff.truncated}`);
+
+    await postJson('/api/git/unstage', { paths: ['src/new-file.txt'] });
+    const afterUnstage = await gitStatus();
+    check('unstage returns it to untracked',
+      afterUnstage.files.find((f) => f.path === 'src/new-file.txt')?.untracked === true);
+
+    // Confinement extends to git, which reaches the filesystem by a different
+    // route than the file API and so has to be proved separately.
+    const stageEscape = await postJson('/api/git/stage', { paths: [DIALECT.traversal] });
+    check('git stage refuses a traversal path', stageEscape.status === 403,
+      `got ${stageEscape.status}`);
+
+    const diffEscape = await fetch(
+      `${BASE}/api/git/diff?path=${encodeURIComponent(DIALECT.traversal)}`, { headers: auth });
+    check('git diff refuses a traversal path', diffEscape.status === 403,
+      `got ${diffEscape.status}`);
+
+    const commitEmpty = await postJson('/api/git/commit', { message: '   ' });
+    check('commit refuses an empty message', commitEmpty.status === 400,
+      `got ${commitEmpty.status}`);
+  }
+
   // --- delete ---
   const deleted = await fetch(`${BASE}/api/sessions/persist`, { method: 'DELETE', headers: auth });
   check('session delete succeeds', deleted.status === 204, `got ${deleted.status}`);
