@@ -92,6 +92,29 @@ Open the address, paste the token, and you have a terminal. To put it on a real
 always-on host, see [deploy/README.md](deploy/README.md) — the short version is
 an installer plus `tailscale serve`, with no inbound port anywhere.
 
+### On Windows
+
+Two scripts wrap the same commands:
+
+```powershell
+.\build.ps1          # both halves; -Agent or -Web for one
+.\dev.ps1            # serve this repository on 127.0.0.1:7071
+.\dev.ps1 -Root C:\code\my-app -Open
+```
+
+They exist for one recurring annoyance: Windows keeps an open handle on a
+running executable, so `cargo build` fails with `Access is denied (os error 5)`
+whenever the daemon is up, and the error does not say that is why. `build.ps1`
+checks first and explains. It will not stop the daemon for you without
+`-Force`, because a restart kills every running shell.
+
+`dev.ps1` runs in the foreground, so that terminal *is* the daemon — the log
+prints there and Ctrl+C stops it. It also names whatever is holding the port,
+which the daemon's own "only one usage of each socket address" does not.
+
+Rebuild the client with `.\build.ps1 -Web` and hard-refresh the browser; no
+daemon restart is needed, since `dist/` is served from disk.
+
 On first run it generates a token and persists it to
 `~/.config/nocturn/agent.token` (`%APPDATA%\nocturn\agent.token` on Windows),
 then prints it. Pass `--token` or set `NOCTURN_TOKEN` to supply your own.
