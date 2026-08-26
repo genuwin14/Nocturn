@@ -18,6 +18,30 @@ export type Status = 'connecting' | 'connected' | 'reconnecting' | 'error';
 export interface TerminalHandle {
   /** Injects input as if typed. Used by the on-screen key bar. */
   send: (data: string) => void;
+  /**
+   * Inserts text as a paste rather than as keystrokes.
+   *
+   * This is not the same as `send`. xterm wraps the text in bracketed-paste
+   * markers when the shell has asked for them, which is what lets a shell tell
+   * pasted text from typed text and refuse to execute it on the newlines
+   * inside. Without that, pasting anything multi-line runs every line.
+   */
+  paste: (text: string) => void;
+  /**
+   * Whether pasting this text would execute it rather than place it on the
+   * command line.
+   *
+   * True when the text spans lines *and* the shell has not enabled bracketed
+   * paste. Both halves matter: xterm only emits the markers when the shell
+   * asked for them, and when it has not, it sends the newlines as carriage
+   * returns — so every line runs the moment it arrives.
+   *
+   * PSReadLine over ConPTY is the case that makes this necessary. It never
+   * sets the mode, so on Windows a multi-line paste always executes.
+   */
+  pasteWillExecute: (text: string) => boolean;
+  /** The current selection, or an empty string. */
+  getSelection: () => string;
   focus: () => void;
 }
 
@@ -30,6 +54,9 @@ interface Props {
    * idle or waiting. Called on attach and on every transition.
    */
   onActivityChange?: (activity: Activity, tail: string) => void;
+  /** Whether anything is selected, so a copy affordance can appear only when
+   * there is something to copy. */
+  onSelectionChange?: (hasSelection: boolean) => void;
   /** When true, the next printable keypress is sent as a control character. */
   ctrlArmed?: boolean;
   onCtrlConsumed?: () => void;
@@ -63,7 +90,15 @@ const THEME = {
 
 export const TerminalView = forwardRef<TerminalHandle, Props>(
   function TerminalView(
-    { connection, session, onStatusChange, onActivityChange, ctrlArmed, onCtrlConsumed },
+    {
+      connection,
+      session,
+      onStatusChange,
+      onActivityChange,
+      onSelectionChange,
+      ctrlArmed,
+      onCtrlConsumed,
+    },
     ref,
   ) {
     const hostRef = useRef<HTMLDivElement>(null);
@@ -100,6 +135,11 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
       onActivityChangeRef.current = onActivityChange;
     }, [onActivityChange]);
 
+    const onSelectionChangeRef = useRef(onSelectionChange);
+    useEffect(() => {
+      onSelectionChangeRef.current = onSelectionChange;
+    }, [onSelectionChange]);
+
     /**
      * Writes to the live socket, if there is one. Stable across renders.
      *
@@ -126,6 +166,19 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
         send(data);
         termRef.current?.focus();
       },
+      // Goes through xterm rather than straight to the socket, so the text
+      // picks up bracketed-paste markers when the shell has enabled them. The
+      // resulting bytes reach the socket through the same onData handler as
+      // typing does.
+      paste: (text: string) => {
+        termRef.current?.paste(text);
+        termRef.current?.focus();
+      },
+      pasteWillExecute: (text: string) => {
+        if (!/[\r\n]/.test(text.trimEnd())) return false;
+        return !termRef.current?.modes.bracketedPasteMode;
+      },
+      getSelection: () => termRef.current?.getSelection() ?? '',
       focus: () => termRef.current?.focus(),
     }));
 
@@ -282,9 +335,14 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
         send(bytes);
       });
 
+      const onSelection = term.onSelectionChange(() => {
+        onSelectionChangeRef.current?.(term.hasSelection());
+      });
+
       return () => {
         onData.dispose();
         onBinary.dispose();
+        onSelection.dispose();
       };
     }, [send]);
 

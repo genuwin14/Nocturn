@@ -49,6 +49,18 @@ explicit `^C`/`^D`/`^Z` combinations are the path that always works on a phone.
 **Key presses use `pointerdown`, not `click`.** A click moves focus off the
 terminal and dismisses the on-screen keyboard between every keystroke.
 
+**Pasting asks first when the shell cannot be trusted with newlines.** Paste
+goes through xterm's own `paste()`, which wraps the text in bracketed-paste
+markers — but only when the shell has enabled that mode, and PSReadLine over
+ConPTY never does. Measured on the wire, a two-line paste to a PowerShell
+session arrives as `echo A\recho B` and both commands run immediately.
+
+So a multi-line paste into a shell that has not enabled the mode is confirmed
+before it is sent, naming how many lines will execute. Bash and zsh do enable
+it, so there the paste lands on the command line and no prompt appears. The
+check is on the mode rather than on the platform, so a session running bash on
+the same Windows host behaves correctly without a special case.
+
 **Reconnect clears the terminal first.** The daemon replays its scrollback on
 every attach, so repainting from a clean screen shows the true remote state.
 Appending instead would stack a second copy of everything below the first.
@@ -93,5 +105,5 @@ Windows path.
   spawn.
 - No diff view. Reviewing what Claude changed before committing is the obvious
   next feature, and more valuable on a phone than the editor is.
-- No paste button. iOS Safari will not let a webview read the clipboard without
-  a user gesture bound to a real element.
+- No hunk-level staging. Files stage and unstage whole; splitting a file into
+  hunks is the next thing the Review tab wants.

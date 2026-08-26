@@ -844,3 +844,24 @@ code {
   margin-top: 6px;
   font-size: 12px;
 }
+
+/* --- paste fallback ------------------------------------------------------- */
+
+/*
+  Shown when the clipboard read is refused, and on a long press for anyone who
+  would rather see what they are about to send. It occupies the key bar rather
+  than floating above it, so the terminal geometry does not change and no
+  resize round trip is needed to show it.
+*/
+.paste-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+}
+
+.paste-field input {
+  flex: 1;
+  min-width: 0;
+}

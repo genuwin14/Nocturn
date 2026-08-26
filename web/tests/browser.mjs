@@ -4,8 +4,14 @@ import { mkdirSync } from 'node:fs';
 import puppeteer from 'puppeteer-core';
 
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const URL = 'http://127.0.0.1:7071/';
-const TOKEN = 'test-token-abc123';
+
+// Overridable the same way the wire suite is, so the tests can run against a
+// throwaway daemon on another port rather than requiring the one you are
+// actually using to be stopped first.
+//   NOCTURN_TEST_URL    default http://127.0.0.1:7071
+//   NOCTURN_TEST_TOKEN  default test-token-abc123
+const URL = (process.env.NOCTURN_TEST_URL ?? 'http://127.0.0.1:7071').replace(/\/*$/, '/');
+const TOKEN = process.env.NOCTURN_TEST_TOKEN ?? 'test-token-abc123';
 const OUT = process.argv[2] ?? '.';
 
 // Screenshots land here, and git does not track empty directories — so on a
@@ -36,6 +42,15 @@ try {
     if (m.type() === 'error') consoleErrors.push(m.text());
   });
   page.on('pageerror', (e) => consoleErrors.push(`uncaught: ${e.message}`));
+
+  // Start from a fresh shell. Sessions survive client disconnects — that is
+  // the product's central guarantee — so without this, every run inherits the
+  // previous run's scrollback and whatever it left on the command line, and
+  // assertions about what is on screen quietly stop meaning anything.
+  await fetch(`${URL}api/sessions/main`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${TOKEN}` },
+  }).catch(() => {});
 
   await page.goto(URL, { waitUntil: 'networkidle0' });
 
@@ -121,6 +136,71 @@ try {
   });
   const armed = await page.$eval('.key-mod', (el) => el.classList.contains('armed'));
   check('Ctrl key arms', armed);
+
+  // Disarm, so the paste below is not swallowed as a control character.
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('.keybar .key')].find((b) => b.textContent === 'Ctrl');
+    btn?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  });
+
+  // --- paste ---
+  // Chrome refuses navigator.clipboard.readText() without permission, exactly
+  // as Safari does, so granting it here exercises the real path rather than
+  // the fallback.
+  // overridePermissions takes a bare origin; a trailing path silently matches
+  // nothing and the grant appears to have worked while every read is refused.
+  await browser
+    .defaultBrowserContext()
+    .overridePermissions(new globalThis.URL(URL).origin, [
+      'clipboard-read',
+      'clipboard-write',
+      'clipboard-sanitized-write',
+    ]);
+
+  const pasteKey = await page.$$eval('.keybar .key', (els) =>
+    els.some((e) => e.textContent === 'Paste'),
+  );
+  check('key bar offers a paste key', pasteKey);
+
+  await page.evaluate(() => navigator.clipboard.writeText('NOCTURN_PASTED'));
+  await page.click('.terminal-host');
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('.keybar .key')].find((b) => b.textContent === 'Paste');
+    btn?.click();
+  });
+  await sleep(1200);
+
+  const afterPaste = await page.$eval('.xterm-screen', (el) => el.textContent ?? '');
+  check('paste puts the clipboard on the command line',
+    afterPaste.includes('NOCTURN_PASTED'),
+    afterPaste.includes('NOCTURN_PASTED') ? '' : afterPaste.slice(-60));
+
+  // A multi-line paste into a shell that does not support bracketed paste runs
+  // every line the moment it arrives. PSReadLine over ConPTY is exactly that
+  // shell, so on Windows this is the normal case rather than an edge one, and
+  // the client has to ask before doing it.
+  let asked = null;
+  page.once('dialog', async (dialog) => {
+    asked = dialog.message();
+    // Dismiss: refusing must mean nothing reaches the shell at all.
+    await dialog.dismiss();
+  });
+
+  await page.evaluate(() => navigator.clipboard.writeText('echo LINE_A\necho LINE_B'));
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('.keybar .key')].find((b) => b.textContent === 'Paste');
+    btn?.click();
+  });
+  await sleep(1500);
+
+  check('a multi-line paste warns before it executes anything',
+    asked !== null && /execute/i.test(asked ?? ''),
+    asked ? JSON.stringify(asked.split('\n')[0]) : 'no dialog shown');
+
+  const afterMultiline = await page.$eval('.xterm-screen', (el) => el.textContent ?? '');
+  check('declining the warning runs nothing',
+    !afterMultiline.includes('LINE_A') && !afterMultiline.includes('LINE_B'),
+    `LINE_A x${(afterMultiline.match(/LINE_A/g) ?? []).length}`);
 
   // --- files tab ---
   await page.evaluate(() => {

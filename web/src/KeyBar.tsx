@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 /**
  * On-screen keys that phone keyboards do not have.
@@ -15,9 +15,17 @@ import { useState } from 'react';
 
 interface Props {
   onSend: (data: string) => void;
+  /** Inserts text as a paste, so the shell can bracket it. */
+  onPaste: (text: string) => void;
+  /** Returns the terminal's current selection. */
+  getSelection: () => string;
+  hasSelection: boolean;
   ctrlArmed: boolean;
   onToggleCtrl: () => void;
 }
+
+/** How long a press on Paste has to be held to open the manual field. */
+const LONG_PRESS_MS = 500;
 
 interface Key {
   label: string;
@@ -69,9 +77,110 @@ const SYMBOL_KEYS: Key[] = [
   { label: ']', data: ']' },
 ];
 
-export function KeyBar({ onSend, ctrlArmed, onToggleCtrl }: Props) {
+export function KeyBar({
+  onSend,
+  onPaste,
+  getSelection,
+  hasSelection,
+  ctrlArmed,
+  onToggleCtrl,
+}: Props) {
   const [row, setRow] = useState<'nav' | 'symbols'>('nav');
+  const [manual, setManual] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [copied, setCopied] = useState(false);
+  const longPress = useRef<number | null>(null);
   const keys = row === 'nav' ? NAV_KEYS : SYMBOL_KEYS;
+
+  /**
+   * Reads the clipboard and pastes it.
+   *
+   * The gesture requirement is the whole reason this is a button: Safari will
+   * not hand over the clipboard except in response to a real user action on a
+   * real element. A denied or unsupported read is not a dead end — it falls
+   * back to a field the OS paste menu works in normally.
+   */
+  const pasteFromClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) onPaste(text);
+    } catch {
+      setManual(true);
+    }
+  };
+
+  const copySelection = async () => {
+    const text = getSelection();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // Write can be refused too. Nothing useful to fall back to — the
+      // selection is still there to be copied by the OS long-press menu.
+    }
+  };
+
+  const startLongPress = () => {
+    longPress.current = window.setTimeout(() => {
+      longPress.current = null;
+      setManual(true);
+    }, LONG_PRESS_MS);
+  };
+
+  const cancelLongPress = () => {
+    if (longPress.current !== null) {
+      window.clearTimeout(longPress.current);
+      longPress.current = null;
+    }
+  };
+
+  const sendDraft = () => {
+    if (draft) onPaste(draft);
+    setDraft('');
+    setManual(false);
+  };
+
+  if (manual) {
+    return (
+      <div className="keybar">
+        <form
+          className="paste-field"
+          onSubmit={(e) => {
+            e.preventDefault();
+            sendDraft();
+          }}
+        >
+          <input
+            type="text"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Paste here, then Send"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            // The point of this field is that the OS paste menu works in it,
+            // which needs focus.
+            autoFocus
+          />
+          <button type="submit" className="primary" disabled={!draft}>
+            Send
+          </button>
+          <button
+            type="button"
+            className="link"
+            onClick={() => {
+              setDraft('');
+              setManual(false);
+            }}
+          >
+            Cancel
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div className="keybar">
@@ -98,6 +207,40 @@ export function KeyBar({ onSend, ctrlArmed, onToggleCtrl }: Props) {
         >
           {row === 'nav' ? '#+=' : 'abc'}
         </button>
+
+        {/*
+          Click, not pointerdown like every other key. Safari's clipboard
+          gesture requirement is satisfied by a click, and the focus cost that
+          makes pointerdown right for character keys does not apply to a
+          one-shot action that ends by focusing the terminal anyway.
+        */}
+        <button
+          type="button"
+          className="key key-mod"
+          onClick={() => void pasteFromClipboard()}
+          onPointerDown={startLongPress}
+          onPointerUp={cancelLongPress}
+          onPointerLeave={cancelLongPress}
+          // Long-pressing anything in a webview otherwise starts a text
+          // selection or opens the OS callout.
+          onContextMenu={(e) => e.preventDefault()}
+          aria-label="Paste from clipboard"
+        >
+          Paste
+        </button>
+
+        {/* Only when there is something to copy. A permanently dead button on
+            a bar this narrow costs more than it explains. */}
+        {hasSelection && (
+          <button
+            type="button"
+            className="key key-mod"
+            onClick={() => void copySelection()}
+            aria-label="Copy selection"
+          >
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        )}
       </div>
 
       <div className="keybar-scroll">

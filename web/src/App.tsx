@@ -47,6 +47,7 @@ export default function App() {
   const [activity, setActivity] = useState<Activity>('working');
   const [activityTail, setActivityTail] = useState('');
   const [ctrlArmed, setCtrlArmed] = useState(false);
+  const [hasSelection, setHasSelection] = useState(false);
 
   const terminalRef = useRef<TerminalHandle>(null);
 
@@ -58,6 +59,10 @@ export default function App() {
   const onActivityChange = useCallback((next: Activity, tail: string) => {
     setActivity(next);
     setActivityTail(tail);
+  }, []);
+
+  const onSelectionChange = useCallback((next: boolean) => {
+    setHasSelection(next);
   }, []);
 
   const connect = (next: Connection) => {
@@ -152,6 +157,7 @@ export default function App() {
             session={session}
             onStatusChange={onStatusChange}
             onActivityChange={onActivityChange}
+            onSelectionChange={onSelectionChange}
             ctrlArmed={ctrlArmed}
             onCtrlConsumed={() => setCtrlArmed(false)}
           />
@@ -181,6 +187,30 @@ export default function App() {
       {tab === 'terminal' && (
         <KeyBar
           onSend={sendKeys}
+          onPaste={(text) => {
+            const terminal = terminalRef.current;
+            if (!terminal) return;
+
+            // Bracketed paste is what normally stops a multi-line paste from
+            // running line by line, but it only works when the shell enables
+            // it — and PSReadLine over ConPTY never does. Rather than let a
+            // stray tap fire off several commands on a host somewhere, say so
+            // first. This is the failure the README worries about, and it is
+            // silent without the check.
+            if (terminal.pasteWillExecute(text)) {
+              const lines = text.trimEnd().split(/\r\n|\r|\n/).length;
+              const proceed = window.confirm(
+                `This shell runs pasted lines immediately, so all ${lines} of these will execute now.\n\n` +
+                  `First line: ${text.split(/\r\n|\r|\n/)[0].slice(0, 60)}\n\n` +
+                  `Paste anyway?`,
+              );
+              if (!proceed) return;
+            }
+
+            terminal.paste(text);
+          }}
+          getSelection={() => terminalRef.current?.getSelection() ?? ''}
+          hasSelection={hasSelection}
           ctrlArmed={ctrlArmed}
           onToggleCtrl={() => setCtrlArmed((armed) => !armed)}
         />
