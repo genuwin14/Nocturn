@@ -7,6 +7,7 @@ interface Props {
   onSelect: (id: string) => void;
   onClose: () => void;
   onDisconnect: () => void;
+  onManageDevices: () => void;
 }
 
 // Only two of the three are worth spending a row's width on. "Working" is the
@@ -25,7 +26,14 @@ function age(createdAt: number): string {
   return `${Math.floor(seconds / 86400)}d`;
 }
 
-export function Sessions({ connection, current, onSelect, onClose, onDisconnect }: Props) {
+export function Sessions({
+  connection,
+  current,
+  onSelect,
+  onClose,
+  onDisconnect,
+  onManageDevices,
+}: Props) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [newName, setNewName] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -112,6 +120,9 @@ export function Sessions({ connection, current, onSelect, onClose, onDisconnect 
         </form>
 
         <footer className="sheet-footer">
+          <button type="button" className="link" onClick={onManageDevices}>
+            Devices
+          </button>
           <button type="button" className="danger-link" onClick={onDisconnect}>
             Forget this daemon
           </button>

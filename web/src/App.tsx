@@ -22,6 +22,10 @@ const Files = lazy(() => import('./Files').then((m) => ({ default: m.Files })));
 // opened, and the terminal stays the only thing in the first load.
 const Review = lazy(() => import('./Review').then((m) => ({ default: m.Review })));
 
+// Opened rarely — adding or removing a device is not a daily act — so it costs
+// nothing until the sheet is asked for.
+const Devices = lazy(() => import('./Devices').then((m) => ({ default: m.Devices })));
+
 type Tab = 'terminal' | 'review' | 'files';
 
 const STATUS_LABEL: Record<Status, string> = {
@@ -42,6 +46,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('terminal');
   const [session, setSession] = useState('main');
   const [showSessions, setShowSessions] = useState(false);
+  const [showDevices, setShowDevices] = useState(false);
   const [status, setStatus] = useState<Status>('connecting');
   const [statusDetail, setStatusDetail] = useState<string>();
   const [activity, setActivity] = useState<Activity>('working');
@@ -251,7 +256,28 @@ export default function App() {
           }}
           onClose={() => setShowSessions(false)}
           onDisconnect={disconnect}
+          onManageDevices={() => {
+            setShowSessions(false);
+            setShowDevices(true);
+          }}
         />
+      )}
+
+      {showDevices && (
+        <Suspense fallback={null}>
+          <Devices
+            connection={connection}
+            onClose={() => setShowDevices(false)}
+            // Revoking the token this browser is using leaves it holding a
+            // credential the daemon no longer accepts. Dropping it returns to
+            // the setup screen, rather than letting every request 403 with no
+            // explanation.
+            onSelfRevoked={() => {
+              setShowDevices(false);
+              disconnect();
+            }}
+          />
+        </Suspense>
       )}
     </div>
   );

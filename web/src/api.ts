@@ -234,6 +234,40 @@ export const writeFile = (c: Connection, path: string, content: string) =>
     body: JSON.stringify({ path, content }),
   });
 
+export interface Device {
+  id: string;
+  name: string;
+  created: number;
+  /** Zero when it has never been used. */
+  last_seen: number;
+  last_ip: string;
+  /** True for the token this client is authenticated with. */
+  current: boolean;
+}
+
+export interface MintedDevice extends Device {
+  /** Returned exactly once; the daemon keeps only a salted hash. */
+  secret: string;
+  pair_url: string;
+  /** The pairing URL as an SVG, rendered by the daemon. */
+  qr_svg: string;
+}
+
+export const listDevices = (c: Connection) => request<Device[]>(c, '/api/tokens');
+
+export const mintDevice = (c: Connection, name: string) =>
+  request<MintedDevice>(c, '/api/tokens', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+
+export const revokeDevice = (c: Connection, id: string) =>
+  fetch(`${c.origin}/api/tokens/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${c.token}` },
+  });
+
 export const gitStatus = (c: Connection) => request<GitStatus>(c, '/api/git/status');
 
 export const gitDiff = (c: Connection, path: string, staged: boolean) =>

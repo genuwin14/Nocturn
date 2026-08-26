@@ -89,6 +89,11 @@ pub struct TokenInfo {
     pub created: u64,
     pub last_seen: u64,
     pub last_ip: String,
+    /// True for the token making the request. Revoking your own is legitimate
+    /// — it is what you do from a device you are about to hand on — but it
+    /// logs this client out, and that should not be a surprise.
+    #[serde(default)]
+    pub current: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -249,8 +254,20 @@ impl TokenStore {
         Ok(true)
     }
 
-    pub async fn list(&self) -> Vec<TokenInfo> {
-        let mut out: Vec<TokenInfo> = self.records.read().await.iter().map(|r| r.info()).collect();
+    /// Lists devices, marking whichever one is asking.
+    pub async fn list(&self, caller: Option<&Principal>) -> Vec<TokenInfo> {
+        let current = caller.map(|p| p.id().to_string());
+        let mut out: Vec<TokenInfo> = self
+            .records
+            .read()
+            .await
+            .iter()
+            .map(|r| {
+                let mut info = r.info();
+                info.current = current.as_deref() == Some(info.id.as_str());
+                info
+            })
+            .collect();
         out.sort_by_key(|t| t.created);
         out
     }
@@ -331,6 +348,7 @@ impl TokenRecord {
             created: self.created,
             last_seen: self.last_seen,
             last_ip: self.last_ip.clone(),
+            current: false,
         }
     }
 }
@@ -453,7 +471,7 @@ mod tests {
         );
         // It is a way back in, so it must not appear in a list of revocable
         // devices, and must not be on disk.
-        assert!(store.list().await.is_empty());
+        assert!(store.list(None).await.is_empty());
         assert!(!path.exists() || !std::fs::read_to_string(&path).unwrap().contains("env-supplied"));
     }
 
@@ -465,7 +483,7 @@ mod tests {
 
         // Upgrading must not lock anyone out of their own daemon.
         assert!(store.verify("previously-persisted").await.is_some());
-        assert_eq!(store.list().await.len(), 1);
+        assert_eq!(store.list(None).await.len(), 1);
 
         // And it is stored hashed like any other.
         let written = std::fs::read_to_string(&path).unwrap();
@@ -482,7 +500,7 @@ mod tests {
 
         let reopened = TokenStore::open(path, None, None).unwrap();
         assert!(reopened.verify(&secret).await.is_some());
-        assert_eq!(reopened.list().await.len(), 1);
+        assert_eq!(reopened.list(None).await.len(), 1);
     }
 
     #[test]

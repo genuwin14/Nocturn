@@ -327,6 +327,76 @@ try {
     body: JSON.stringify({ path: 'readme.txt', content: 'hello from nocturn\n' }),
   });
 
+  // --- devices ---
+  await page.evaluate(() => {
+    document.querySelector('.session-button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await page.waitForSelector('.sheet', { timeout: 10000 });
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('.sheet-footer button')]
+      .find((b) => b.textContent === 'Devices');
+    btn?.click();
+  });
+  await page.waitForSelector('.device-list, .minted', { timeout: 10000 });
+
+  const deviceNames = await page.$$eval('.device-name', (els) =>
+    els.map((e) => e.textContent ?? ''),
+  );
+  check('the device list loads', Array.isArray(deviceNames), deviceNames.join(', '));
+
+  // Minting has to hand back a scannable code and say the secret is shown once
+  // — the daemon keeps only a hash, so a client that hides it strands the user.
+  await page.type('.new-session input', 'browser-test-device');
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('.new-session button')]
+      .find((b) => b.textContent === 'Add');
+    btn?.click();
+  });
+  await page.waitForSelector('.minted-qr', { timeout: 10000 });
+
+  const mintedQr = await page.$eval('.minted-qr', (el) => el.getAttribute('src') ?? '');
+  check('adding a device shows a scannable code',
+    mintedQr.startsWith('data:image/svg+xml') && mintedQr.includes('svg'),
+    `${mintedQr.length} bytes`);
+
+  const mintedText = await page.$eval('.minted', (el) => el.textContent ?? '');
+  check('and warns the secret is shown only once',
+    /only time/i.test(mintedText), JSON.stringify(mintedText.slice(0, 60)));
+
+  await page.screenshot({ path: `${OUT}/08-devices.png` });
+
+  // Back to the list, and clean up what this test created.
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('.minted-actions button')]
+      .find((b) => b.textContent === 'Done');
+    btn?.click();
+  });
+  await page.waitForSelector('.device-list', { timeout: 10000 });
+
+  const listed = await page.$$eval('.device-name', (els) => els.map((e) => e.textContent ?? ''));
+  check('the new device appears in the list',
+    listed.some((n) => n.includes('browser-test-device')), listed.join(', '));
+
+  // Revoke it through the UI, confirming the dialog this time.
+  page.once('dialog', (d) => d.accept());
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('.device-list li')]
+      .find((li) => li.textContent?.includes('browser-test-device'));
+    row?.querySelector('.icon-button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await page.waitForFunction(
+    () => ![...document.querySelectorAll('.device-name')]
+      .some((e) => e.textContent?.includes('browser-test-device')),
+    { timeout: 10000 },
+  );
+  check('revoking removes it from the list', true);
+
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('.sheet-header button')]
+      .find((b) => b.textContent === 'Done');
+    btn?.click();
+  });
+
   // --- pairing by scanned link ---
   // What a phone does after scanning the daemon's QR code: arrive with the
   // token in the fragment, and land in the terminal without a setup screen.

@@ -865,3 +865,96 @@ code {
   flex: 1;
   min-width: 0;
 }
+
+/* --- devices -------------------------------------------------------------- */
+
+.device-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.device-list li {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.device-list li.current {
+  background: rgba(122, 162, 247, 0.06);
+}
+
+.device-row {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.device-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.device-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.device-meta {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+/* --- a newly minted device ------------------------------------------------ */
+
+.minted {
+  padding: 14px 16px 6px;
+  text-align: center;
+}
+
+.minted-lede {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
+/* White, deliberately, against the dark sheet. The daemon renders the code
+   black on white because that is what a scanner reads fastest, and a dark
+   surface behind a transparent code is one nobody can read at all. */
+.minted-qr {
+  width: 200px;
+  height: 200px;
+  max-width: 100%;
+  background: #fff;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.minted-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.minted-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 14px 0 8px;
+}
+
+.sheet-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}

@@ -222,7 +222,7 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("failed to bind {}", args.bind))?;
 
-    let devices = store.list().await;
+    let devices = store.list(None).await;
     print_banner(
         &args.bind,
         &shell_root,
@@ -420,10 +420,17 @@ struct MintResponse {
     secret: String,
     /// Ready to scan or send; the token is in the fragment, not the path.
     pair_url: String,
+    /// The same URL as a QR code, rendered here rather than in the client so
+    /// the browser needs no QR library for something it shows once.
+    qr_svg: String,
 }
 
-async fn list_tokens(State(state): State<AppState>) -> Json<Vec<TokenInfo>> {
-    Json(state.tokens.list().await)
+async fn list_tokens(
+    State(state): State<AppState>,
+    principal: Option<axum::Extension<tokens::Principal>>,
+) -> Json<Vec<TokenInfo>> {
+    let caller = principal.map(|axum::Extension(p)| p);
+    Json(state.tokens.list(caller.as_ref()).await)
 }
 
 async fn mint_token(
@@ -446,11 +453,36 @@ async fn mint_token(
     })?;
 
     let pair_url = pairing_url(&state.bind, state.public_url.as_deref(), &secret);
+    let qr_svg = pairing_svg(&pair_url);
     Ok(Json(MintResponse {
         token,
         secret,
         pair_url,
+        qr_svg,
     }))
+}
+
+/// Renders a pairing URL as an SVG QR code.
+///
+/// Black on white, explicitly, rather than anything theme-aware. Two reasons,
+/// and the second is the one that bites: a scanner wants maximum contrast with
+/// dark modules on a light ground, and an SVG shown through an `<img>` is its
+/// own document with no access to the page's stylesheet — so `currentColor`
+/// there silently resolves to black, which on a dark surface is a code nobody
+/// can read. A QR code is a machine-readable target, not a piece of the theme.
+fn pairing_svg(url: &str) -> String {
+    use qrcode::render::svg;
+    use qrcode::QrCode;
+
+    match QrCode::new(url.as_bytes()) {
+        Ok(code) => code
+            .render()
+            .min_dimensions(200, 200)
+            .dark_color(svg::Color("#000000"))
+            .light_color(svg::Color("#ffffff"))
+            .build(),
+        Err(_) => String::new(),
+    }
 }
 
 async fn revoke_token(
