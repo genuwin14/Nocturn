@@ -10,6 +10,7 @@ mod fsapi;
 mod gitapi;
 mod protocol;
 mod session;
+mod tokens;
 mod ws;
 
 use std::net::SocketAddr;
@@ -27,12 +28,17 @@ use serde::Serialize;
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 
 use session::{SessionInfo, SessionManager};
+use tokens::{TokenInfo, TokenStore};
 
 #[derive(Clone)]
 pub struct AppState {
     pub sessions: Arc<SessionManager>,
-    pub token: Arc<String>,
+    pub tokens: Arc<TokenStore>,
     pub root: Arc<PathBuf>,
+    /// Carried so a newly minted token can be returned with a ready-to-scan
+    /// pairing URL, which the daemon cannot otherwise reconstruct.
+    pub bind: SocketAddr,
+    pub public_url: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -76,11 +82,17 @@ struct Args {
     #[arg(long, env = "NOCTURN_PUBLIC_URL")]
     public_url: Option<String>,
 
-    /// Print the pairing QR code and exit, without starting a server. For
-    /// adding a device to a daemon that is already running, which is the
-    /// common case once it is deployed.
+    /// Print a pairing QR code and exit, without starting a server. Mints a
+    /// fresh token for the device being paired, so the one you already use is
+    /// never handed around. For adding a device to a daemon that is already
+    /// running, which is the common case once it is deployed.
     #[arg(long)]
     pair: bool,
+
+    /// Name for the token `--pair` mints. Shows up in the device list and is
+    /// what you look for when revoking.
+    #[arg(long, default_value = "new device")]
+    pair_name: String,
 }
 
 #[tokio::main]
@@ -101,17 +113,50 @@ async fn main() -> Result<()> {
         .canonicalize()
         .with_context(|| format!("project root does not exist: {}", root.display()))?;
 
-    let token = match args.token {
-        Some(token) => token,
-        None => load_or_create_token()?,
-    };
+    // A token supplied by flag or environment is a *bootstrap* credential: it
+    // always works, is never written down, and cannot be revoked through the
+    // API. That is what makes it the way back in after revoking everything.
+    let bootstrap = args.token.clone();
+
+    let store = Arc::new(TokenStore::open(
+        store_path()?,
+        bootstrap.clone(),
+        // The single-token file from before this existed. Adopted rather than
+        // discarded, so upgrading does not lock anyone out of their own daemon.
+        std::fs::read_to_string(token_path()?).ok(),
+    )?);
 
     // --pair answers "let me add my phone" without restarting, which would cost
-    // every running shell. It reads the same persisted token and exits.
+    // every running shell.
     if args.pair {
-        print_pairing(&args.bind, args.public_url.as_deref(), &token);
+        let secret = match bootstrap {
+            Some(token) => token,
+            None => {
+                let (info, secret) = store.mint(&args.pair_name).await?;
+                println!();
+                println!("  minted token '{}' ({})", info.name, info.id);
+                secret
+            }
+        };
+        print_pairing(&args.bind, args.public_url.as_deref(), &secret);
         return Ok(());
     }
+
+    // A store with nothing in it and no bootstrap means a first run. Mint one
+    // so the banner has something to show, exactly as the old single-token file
+    // used to be created on demand.
+    let banner_token = match bootstrap.clone() {
+        Some(token) => token,
+        None => {
+            if store.is_empty().await {
+                let (_, secret) = store.mint("first device").await?;
+                Some(secret)
+            } else {
+                None
+            }
+            .unwrap_or_default()
+        }
+    };
 
     let shell = resolve_shell(args.shell);
 
@@ -128,8 +173,10 @@ async fn main() -> Result<()> {
 
     let state = AppState {
         sessions,
-        token: Arc::new(token.clone()),
+        tokens: store.clone(),
         root: Arc::new(root.clone()),
+        bind: args.bind,
+        public_url: args.public_url.clone(),
     };
 
     let protected = Router::new()
@@ -145,6 +192,8 @@ async fn main() -> Result<()> {
         .route("/api/git/unstage", post(gitapi::unstage))
         .route("/api/git/discard", post(gitapi::discard))
         .route("/api/git/commit", post(gitapi::commit))
+        .route("/api/tokens", get(list_tokens).post(mint_token))
+        .route("/api/tokens/{id}", delete(revoke_token))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_token,
@@ -173,8 +222,22 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("failed to bind {}", args.bind))?;
 
-    print_banner(&args.bind, &shell_root, &shell, &token, args.allow_api_key);
-    print_pairing(&args.bind, args.public_url.as_deref(), &token);
+    let devices = store.list().await;
+    print_banner(
+        &args.bind,
+        &shell_root,
+        &shell,
+        &banner_token,
+        &devices,
+        args.allow_api_key,
+    );
+
+    // Only when there is a fresh secret to show. On a restart the stored tokens
+    // are hashes, so there is nothing to print a code for — `--pair` mints one
+    // on demand instead.
+    if !banner_token.is_empty() {
+        print_pairing(&args.bind, args.public_url.as_deref(), &banner_token);
+    }
 
     axum::serve(
         listener,
@@ -274,30 +337,6 @@ fn resolve_shell(explicit: Option<String>) -> Vec<String> {
     }
 }
 
-/// Returns the persisted token, generating and saving one on first run.
-fn load_or_create_token() -> Result<String> {
-    let path = token_path()?;
-
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        let existing = existing.trim().to_string();
-        if !existing.is_empty() {
-            return Ok(existing);
-        }
-    }
-
-    let token = generate_token();
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    std::fs::write(&path, &token)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    restrict_permissions(&path);
-
-    tracing::info!(path = %path.display(), "generated new access token");
-    Ok(token)
-}
 
 fn token_path() -> Result<PathBuf> {
     let base = if cfg!(windows) {
@@ -314,16 +353,15 @@ fn token_path() -> Result<PathBuf> {
     Ok(base.join("nocturn").join("agent.token"))
 }
 
-fn generate_token() -> String {
-    use rand::RngExt;
-    let mut bytes = [0u8; 32];
-    rand::rng().fill(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+/// Where the device tokens live, beside the file they replace.
+fn store_path() -> Result<PathBuf> {
+    Ok(token_path()?.with_file_name("tokens.json"))
 }
+
 
 /// Tightens the token file to owner-only. Best effort: a failure here is worth
 /// warning about but not worth refusing to start over.
-fn restrict_permissions(path: &std::path::Path) {
+pub(crate) fn restrict_permissions(path: &std::path::Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -337,13 +375,28 @@ fn restrict_permissions(path: &std::path::Path) {
     }
 }
 
-fn print_banner(bind: &SocketAddr, root: &std::path::Path, shell: &[String], token: &str, allow_api_key: bool) {
+fn print_banner(
+    bind: &SocketAddr,
+    root: &std::path::Path,
+    shell: &[String],
+    token: &str,
+    devices: &[TokenInfo],
+    allow_api_key: bool,
+) {
     println!();
     println!("  nocturn-agent {}", env!("CARGO_PKG_VERSION"));
     println!("  listening   http://{bind}");
     println!("  root        {}", root.display());
     println!("  shell       {}", shell.join(" "));
-    println!("  token       {token}");
+    if token.is_empty() {
+        // Stored tokens are hashes, so there is no secret to print on a
+        // restart. Saying which devices exist is the useful thing instead.
+        let names: Vec<&str> = devices.iter().map(|d| d.name.as_str()).collect();
+        println!("  devices     {}", names.join(", "));
+        println!("  pairing     nocturn-agent --pair --pair-name <device>");
+    } else {
+        println!("  token       {token}");
+    }
     if allow_api_key {
         println!("  warning     ANTHROPIC_API_KEY passes through; Claude Code will bill at API rates");
     }
@@ -351,6 +404,67 @@ fn print_banner(bind: &SocketAddr, root: &std::path::Path, shell: &[String], tok
     println!("  attach:     ws://{bind}/ws/terminal?session=main");
     println!("  health:     curl http://{bind}/health");
     println!();
+}
+
+#[derive(serde::Deserialize)]
+struct MintRequest {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct MintResponse {
+    #[serde(flatten)]
+    token: TokenInfo,
+    /// Returned exactly once. The store keeps only a salted hash, so nothing
+    /// can produce this again.
+    secret: String,
+    /// Ready to scan or send; the token is in the fragment, not the path.
+    pair_url: String,
+}
+
+async fn list_tokens(State(state): State<AppState>) -> Json<Vec<TokenInfo>> {
+    Json(state.tokens.list().await)
+}
+
+async fn mint_token(
+    State(state): State<AppState>,
+    Json(request): Json<MintRequest>,
+) -> Result<Json<MintResponse>, fsapi::ApiError> {
+    let name = request.name.trim();
+    if name.is_empty() {
+        return Err(fsapi::err(
+            axum::http::StatusCode::BAD_REQUEST,
+            "a device name is required",
+        ));
+    }
+
+    let (token, secret) = state.tokens.mint(name).await.map_err(|e| {
+        fsapi::err(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("could not mint a token: {e}"),
+        )
+    })?;
+
+    let pair_url = pairing_url(&state.bind, state.public_url.as_deref(), &secret);
+    Ok(Json(MintResponse {
+        token,
+        secret,
+        pair_url,
+    }))
+}
+
+async fn revoke_token(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> axum::http::StatusCode {
+    match state.tokens.revoke(&id).await {
+        Ok(true) => axum::http::StatusCode::NO_CONTENT,
+        Ok(false) => axum::http::StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to persist a revocation");
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }
 
 /// Builds the URL a phone scans to pair.

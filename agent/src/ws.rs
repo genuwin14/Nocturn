@@ -61,19 +61,28 @@ pub async fn terminal_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<AttachParams>,
     State(state): State<AppState>,
+    // Inserted by the auth middleware. Absent only if this route were ever
+    // mounted unauthenticated, in which case there is nothing to revoke.
+    principal: Option<axum::Extension<crate::tokens::Principal>>,
 ) -> Response {
+    let token_id = principal.map(|axum::Extension(p)| p.id().to_string());
     // Browsers send the token as a subprotocol, and the handshake fails unless
     // the server selects one of the offered protocols. Echoing our own marker
     // protocol satisfies that without echoing the token back.
     ws.protocols([WS_SUBPROTOCOL])
         .on_upgrade(move |socket| async move {
-            if let Err(e) = run(socket, params, state).await {
+            if let Err(e) = run(socket, params, state, token_id).await {
                 tracing::warn!(error = %e, "terminal socket ended with error");
             }
         })
 }
 
-async fn run(socket: WebSocket, params: AttachParams, state: AppState) -> anyhow::Result<()> {
+async fn run(
+    socket: WebSocket,
+    params: AttachParams,
+    state: AppState,
+    token_id: Option<String>,
+) -> anyhow::Result<()> {
     let session = state
         .sessions
         .get_or_create(&params.session, params.cols, params.rows)
@@ -126,9 +135,47 @@ async fn run(socket: WebSocket, params: AttachParams, state: AppState) -> anyhow
     let mut writer = tokio::spawn(pump_output(ws_tx, rx, out_rx));
     let mut reader = tokio::spawn(pump_input(session.clone(), ws_rx, out_tx));
 
+    // Revoking a lost phone has to end the terminal it currently has open, not
+    // wait for it to reconnect and be refused. Without this the window between
+    // "revoked" and "actually disconnected" is however long the thief keeps the
+    // socket alive, which is indefinite.
+    let mut revocations = state.tokens.subscribe_revocations();
+    let watched = token_id.clone();
+    let revoked = async move {
+        let Some(watched) = watched else {
+            // Nothing to watch; never resolves, so the select falls through to
+            // the other two branches.
+            std::future::pending::<()>().await;
+            return;
+        };
+        loop {
+            match revocations.recv().await {
+                Ok(id) if id == watched => return,
+                Ok(_) => continue,
+                // Lagged means a burst of revocations; the safe reading is that
+                // ours may have been among them.
+                Err(broadcast::error::RecvError::Lagged(_)) => return,
+                Err(broadcast::error::RecvError::Closed) => {
+                    std::future::pending::<()>().await;
+                    return;
+                }
+            }
+        }
+    };
+    tokio::pin!(revoked);
+
     // Whichever half finishes first, tear down the other. The session itself is
     // untouched by this: it keeps running with no clients attached.
     tokio::select! {
+        _ = &mut revoked => {
+            tracing::info!(
+                session = %session.id,
+                token = %token_id.unwrap_or_default(),
+                "closing socket: its token was revoked"
+            );
+            reader.abort();
+            writer.abort();
+        }
         _ = &mut writer => reader.abort(),
         _ = &mut reader => {
             // The reader ending means the client sent Close or the stream died.

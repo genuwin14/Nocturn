@@ -184,6 +184,9 @@ All routes except `/health` require the token, presented one of three ways:
 | `GET` | `/api/fs/list?path=` | Directory listing, root-relative. |
 | `GET` | `/api/fs/read?path=` | File contents (2 MiB cap, UTF-8 text only). |
 | `PUT` | `/api/fs/write` | `{"path":"…","content":"…"}` |
+| `GET` | `/api/tokens` | Devices, with last seen and last address. Never returns secrets. |
+| `POST` | `/api/tokens` | `{"name":"pixel-9"}` — mints one, returning the secret once. |
+| `DELETE` | `/api/tokens/{id}` | Revoke, immediately and including live sockets. |
 | `GET` | `/api/git/status` | Branch, ahead/behind, and per-file staged/unstaged state. |
 | `GET` | `/api/git/diff?path=&staged=` | Unified diff, whole tree or one path (2 MiB cap). |
 | `POST` | `/api/git/stage` | `{"paths":[…]}` |
@@ -234,10 +237,42 @@ emits `ESC [ 6 n` at startup and blocks until a terminal replies with the cursor
 position. xterm.js does this natively; a hand-rolled client must reply
 `ESC [ <row> ; <col> R` or the shell never reaches its prompt.
 
+## Tokens, one per device
+
+Every device gets its own named token. That is what makes the revocation story
+real rather than theoretical: with a single shared secret, rotating after losing
+a phone logs out the tablet, the laptop, and anything automated, and every one
+of them has to be re-paired by hand. A response that costs an evening gets
+deferred — which is exactly the failure the design was supposed to prevent.
+
+```bash
+nocturn-agent --pair --pair-name pixel-9   # mint one and print its code
+```
+
+Revoking takes effect immediately and does not need a restart, so it no longer
+costs you your running shells. It also closes any socket already authenticated
+with that token, rather than waiting for the thief to reconnect and be refused.
+
+Tokens are stored as salted SHA-256 in `tokens.json`, beside the old token file.
+Not a password KDF: a KDF's cost exists to make guessing a low-entropy
+human-chosen secret expensive, and these are 256 bits from the system RNG. What
+hashing buys is that a readable config file no longer hands over every device's
+credential.
+
+`--token` and `NOCTURN_TOKEN` still work, and now mean something specific: a
+**bootstrap** credential that is always accepted, never written to disk, and
+cannot be revoked through the API. It is how you get back in after revoking
+everything else, and it is what the installer sets.
+
+Upgrading is safe. An existing `agent.token` is adopted into the store on first
+start under the name "first device", so the token you already have keeps
+working — hashed from then on.
+
 ## Security posture
 
 - The phone holds a revocable token, never an SSH key or shell credential.
-- Tokens compare in constant time.
+- Tokens compare in constant time, and every stored token is checked even after
+  a match, so the time taken does not reveal which device is calling.
 - The file API canonicalizes every path and rejects anything that resolves
   outside the root — including symlinks that point out of the tree.
 - The terminal is deliberately *not* confined. It is a shell; treat token
@@ -271,9 +306,10 @@ infrastructure on behalf of other people.
 ## Tests
 
 ```bash
-cd agent && cargo test                  # path confinement, token comparison — 5
-node agent/tests/e2e.mjs                # daemon over the wire — 19
-cd web && npm run test:browser          # the client in headless Chrome — 10
+cd agent && cargo test                  # confinement, tokens, prompts, diffs — 38
+node agent/tests/e2e.mjs                # daemon over the wire — 37
+node agent/tests/revoke.mjs             # revocation ends a live session — 8
+cd web && npm run test:browser          # the client in headless Chrome — 25
 ./deploy/tests/verify-install.sh        # installer in a container — 24
 ```
 

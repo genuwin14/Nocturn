@@ -9,15 +9,19 @@
 //!    URLs and therefore out of access logs.
 //! 3. `?token=<token>` — last resort for quick testing. Query strings land in
 //!    proxy and server logs, so clients should prefer 1 or 2.
+//!
+//! Whichever transport carried it, the token is resolved against the device
+//! store, which owns the constant-time comparison. What arrives downstream is a
+//! `Principal` naming which device is calling.
+
+use std::net::SocketAddr;
 
 use axum::{
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::StatusCode,
     middleware::Next,
     response::Response,
 };
-use subtle::ConstantTimeEq;
-
 use crate::AppState;
 
 pub const WS_SUBPROTOCOL: &str = "nocturn.v1";
@@ -89,42 +93,38 @@ fn percent_decode(input: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Compares in constant time so that a caller cannot recover the token one
-/// byte at a time by measuring how long a rejection takes.
-fn token_matches(expected: &str, presented: &str) -> bool {
-    let expected = expected.as_bytes();
-    let presented = presented.as_bytes();
-    // `ct_eq` requires equal lengths; comparing lengths first leaks only the
-    // length, which is fixed and public.
-    expected.len() == presented.len() && expected.ct_eq(presented).into()
-}
 
 pub async fn require_token(
     State(state): State<AppState>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    match presented_token(&req) {
-        Some(token) if token_matches(&state.token, &token) => Ok(next.run(req).await),
-        Some(_) => {
-            tracing::warn!(path = %req.uri().path(), "rejected request with bad token");
-            Err(StatusCode::FORBIDDEN)
-        }
-        None => Err(StatusCode::UNAUTHORIZED),
-    }
+    let Some(presented) = presented_token(&req) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    let Some(principal) = state.tokens.verify(&presented).await else {
+        tracing::warn!(path = %req.uri().path(), "rejected request with bad token");
+        return Err(StatusCode::FORBIDDEN);
+    };
+
+    let ip = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip().to_string())
+        .unwrap_or_default();
+    state.tokens.touch(&principal, &ip).await;
+
+    // Carried on the request so handlers can attribute what they do — the
+    // WebSocket needs it to know which revocation would end its session.
+    req.extensions_mut().insert(principal);
+
+    Ok(next.run(req).await)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn constant_time_compare_matches_only_exact_tokens() {
-        assert!(token_matches("hunter2", "hunter2"));
-        assert!(!token_matches("hunter2", "hunter3"));
-        assert!(!token_matches("hunter2", "hunter22"));
-        assert!(!token_matches("hunter2", ""));
-    }
 
     #[test]
     fn percent_decoding_handles_escapes_and_plus() {
