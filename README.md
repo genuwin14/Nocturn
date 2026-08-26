@@ -128,7 +128,35 @@ then prints it. Pass `--token` or set `NOCTURN_TOKEN` to supply your own.
 | `--token` | generated | Access token. Also `NOCTURN_TOKEN`. |
 | `--shell` | `$SHELL -l`, or PowerShell | Shell to spawn. Accepts arguments: `--shell "tmux new -A -s claude"`. |
 | `--web` | — | Serve a built web client from this directory. |
+| `--public-url` | — | The address clients actually reach, for the pairing code. |
+| `--pair` | — | Print the pairing code and exit, without starting a server. |
 | `--allow-api-key` | off | See the billing note below. |
+
+### Pairing a phone
+
+On startup the daemon prints a QR code next to the token. Scan it and the
+client opens already connected — no typing a 64-character hex string on a
+phone, and no sending it to yourself through a chat app, which is the thing
+people actually do and the worst possible handling of a credential equivalent
+to shell access.
+
+The token rides in the URL fragment (`https://host/#pair=…`). Fragments are
+never sent to a server, so it cannot appear in an access log, a proxy log, or a
+`Referer` header — the same reasoning that keeps it out of the WebSocket URL.
+The client clears it from the address bar as soon as it loads.
+
+The daemon binds to loopback and is reached through a tunnel, so it cannot work
+out its own public address. Pass `--public-url https://vm.tailnet.ts.net` to
+get a code a phone can use; without it the code points at the bind address and
+says so.
+
+To add a second device later, `nocturn-agent --pair` prints the code and exits.
+It does not restart anything, which matters because a restart kills every
+running shell.
+
+A code on screen is a credential on screen — no more exposed than the token
+printed above it, but scannable from across a room, which a hex string is not.
+Printing on demand beats leaving one in scrollback for the rest of the day.
 
 ### The `ANTHROPIC_API_KEY` trap
 

@@ -327,6 +327,36 @@ try {
     body: JSON.stringify({ path: 'readme.txt', content: 'hello from nocturn\n' }),
   });
 
+  // --- pairing by scanned link ---
+  // What a phone does after scanning the daemon's QR code: arrive with the
+  // token in the fragment, and land in the terminal without a setup screen.
+  const paired = await browser.newPage();
+  try {
+    await paired.setViewport({ width: 393, height: 852, deviceScaleFactor: 2, isMobile: true });
+    const pairErrors = [];
+    paired.on('pageerror', (e) => pairErrors.push(e.message));
+
+    await paired.goto(`${URL}#pair=${TOKEN}`, { waitUntil: 'networkidle0' });
+    await paired.waitForSelector('.terminal-host', { timeout: 10000 });
+    check('a scanned pairing link connects without the setup screen', true);
+
+    // The token must not be left sitting in visible browser chrome, where it
+    // survives into screenshots and browser history.
+    const url = paired.url();
+    check('the pairing fragment is cleared from the address bar',
+      !url.includes('pair=') && !url.includes(TOKEN), url);
+
+    const stored = await paired.evaluate(() => localStorage.getItem('nocturn.connection'));
+    check('the scanned connection is remembered',
+      !!stored && JSON.parse(stored).token === TOKEN,
+      stored ? 'stored' : 'nothing stored');
+
+    check('no uncaught errors on the paired page', pairErrors.length === 0,
+      pairErrors.slice(0, 2).join(' | '));
+  } finally {
+    await paired.close();
+  }
+
   check('no uncaught errors in the console', consoleErrors.length === 0,
     consoleErrors.slice(0, 3).join(' | '));
 

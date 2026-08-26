@@ -90,7 +90,49 @@ const STORAGE_KEY = 'nocturn.connection';
  * the origin is simply wherever the page came from and only a token is needed.
  * A separately hosted client has to be told both.
  */
+/**
+ * Consumes a `#pair=<token>` fragment, if the page was opened by scanning the
+ * daemon's pairing code.
+ *
+ * The token travels in the fragment rather than the query string because
+ * fragments are never sent to a server: it cannot land in an access log, a
+ * proxy log, or a `Referer` header. That is the same reasoning that keeps it
+ * out of the WebSocket URL.
+ *
+ * It is cleared from the address bar immediately. A credential sitting in
+ * visible browser chrome survives into screenshots and shoulders.
+ */
+function consumePairingFragment(): Connection | null {
+  try {
+    const hash = window.location.hash;
+    if (!hash.startsWith('#')) return null;
+
+    const token = new URLSearchParams(hash.slice(1)).get('pair');
+    if (!token) return null;
+
+    window.history.replaceState(
+      null,
+      '',
+      window.location.pathname + window.location.search,
+    );
+
+    // The origin is wherever the code was scanned to, which is by definition
+    // the daemon that printed it.
+    return { origin: window.location.origin, token };
+  } catch {
+    return null;
+  }
+}
+
 export function loadConnection(): Connection | null {
+  // A scanned code wins over a stored connection: scanning is a deliberate act
+  // and usually means re-pairing after a token rotation.
+  const paired = consumePairingFragment();
+  if (paired) {
+    saveConnection(paired);
+    return paired;
+  }
+
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;

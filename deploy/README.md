@@ -21,6 +21,19 @@ sudo tailscale serve --bg 7071
 That is the whole deployment. No inbound port, no public IP, no reverse proxy,
 no TLS certificate to manage.
 
+Then pair a phone, once you know the tailnet name `tailscale serve` gave you:
+
+```bash
+sudo -u nocturn nocturn-agent --pair \
+  --public-url https://$(tailscale status --json | jq -r .Self.DNSName | sed 's/\.$//')
+```
+
+That prints a QR code and exits without touching the running service. Scanning
+it opens the client already connected, which is a great deal better than typing
+64 hex characters on a phone — or sending them to yourself through a chat app,
+which is what people do otherwise, and is the worst possible handling of a
+credential equivalent to shell access on this box.
+
 If Docker is not available, install rustup on the VM and use
 `sudo ./install.sh --from-source` instead. The cross-build exists so the VM
 needs nothing but the binary; it is a convenience, not a requirement.

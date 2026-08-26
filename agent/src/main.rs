@@ -69,6 +69,18 @@ struct Args {
     /// and ignores a Pro or Max subscription entirely.
     #[arg(long)]
     allow_api_key: bool,
+
+    /// The address clients actually reach this daemon at, for the pairing QR
+    /// code — e.g. https://vm.tailnet.ts.net. The daemon binds to loopback and
+    /// is reached through a tunnel, so it cannot work this out for itself.
+    #[arg(long, env = "NOCTURN_PUBLIC_URL")]
+    public_url: Option<String>,
+
+    /// Print the pairing QR code and exit, without starting a server. For
+    /// adding a device to a daemon that is already running, which is the
+    /// common case once it is deployed.
+    #[arg(long)]
+    pair: bool,
 }
 
 #[tokio::main]
@@ -93,6 +105,13 @@ async fn main() -> Result<()> {
         Some(token) => token,
         None => load_or_create_token()?,
     };
+
+    // --pair answers "let me add my phone" without restarting, which would cost
+    // every running shell. It reads the same persisted token and exits.
+    if args.pair {
+        print_pairing(&args.bind, args.public_url.as_deref(), &token);
+        return Ok(());
+    }
 
     let shell = resolve_shell(args.shell);
 
@@ -155,6 +174,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to bind {}", args.bind))?;
 
     print_banner(&args.bind, &shell_root, &shell, &token, args.allow_api_key);
+    print_pairing(&args.bind, args.public_url.as_deref(), &token);
 
     axum::serve(
         listener,
@@ -333,6 +353,68 @@ fn print_banner(bind: &SocketAddr, root: &std::path::Path, shell: &[String], tok
     println!();
 }
 
+/// Builds the URL a phone scans to pair.
+///
+/// The token rides in the fragment, not the query string. Fragments are never
+/// sent to the server, so it cannot appear in an access log, a proxy log, or a
+/// `Referer` header — the same reasoning that keeps the token out of the
+/// WebSocket URL. The client clears it from the address bar on load.
+fn pairing_url(bind: &SocketAddr, public_url: Option<&str>, token: &str) -> String {
+    let base = match public_url {
+        Some(url) => url.trim_end_matches('/').to_string(),
+        None => format!("http://{bind}"),
+    };
+    format!("{base}/#pair={token}")
+}
+
+/// Renders the pairing URL as a QR code in the terminal.
+///
+/// Half-block characters rather than an image, so it works over SSH, in a
+/// container, and in any terminal that can print Unicode — which is the whole
+/// point, since the daemon usually lives on a headless box.
+fn print_pairing(bind: &SocketAddr, public_url: Option<&str>, token: &str) {
+    use qrcode::render::unicode;
+    use qrcode::QrCode;
+
+    let url = pairing_url(bind, public_url, token);
+
+    let Ok(code) = QrCode::new(url.as_bytes()) else {
+        // Only fails if the payload exceeds what a QR code can hold, which a
+        // URL of this shape cannot. Nothing worth failing startup over.
+        return;
+    };
+
+    // Colours are swapped on purpose. A scanner wants dark modules on a light
+    // ground; a filled block in a terminal paints in the *foreground* colour,
+    // which on the dark themes developers overwhelmingly run is the light one.
+    // So dark modules are drawn as spaces, showing the dark background through,
+    // and light modules as filled blocks. On a light-themed terminal this comes
+    // out inverted — many scanners cope, and the URL is printed underneath
+    // either way.
+    let rendered = code
+        .render::<unicode::Dense1x2>()
+        .quiet_zone(true)
+        .dark_color(unicode::Dense1x2::Light)
+        .light_color(unicode::Dense1x2::Dark)
+        .build();
+
+    println!("  scan to pair:");
+    println!();
+    for line in rendered.lines() {
+        println!("  {line}");
+    }
+    println!();
+    println!("  {url}");
+
+    if public_url.is_none() && bind.ip().is_loopback() {
+        println!();
+        println!("  This points at loopback, so it only works on this machine.");
+        println!("  Expose the daemon (tailscale serve --bg {}) and pass", bind.port());
+        println!("  --public-url https://your-host to get a code a phone can use.");
+    }
+    println!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,6 +425,51 @@ mod tests {
         let verbatim = PathBuf::from(r"\\?\C:\Nocturn");
         let expected = if cfg!(windows) { r"C:\Nocturn" } else { r"\\?\C:\Nocturn" };
         assert_eq!(friendly_path(&verbatim), PathBuf::from(expected));
+    }
+
+    #[test]
+    fn pairing_url_uses_the_public_address_when_there_is_one() {
+        let bind: SocketAddr = "127.0.0.1:7071".parse().unwrap();
+        assert_eq!(
+            pairing_url(&bind, Some("https://vm.tailnet.ts.net"), "abc"),
+            "https://vm.tailnet.ts.net/#pair=abc"
+        );
+        // A trailing slash on the flag must not produce a double one.
+        assert_eq!(
+            pairing_url(&bind, Some("https://vm.tailnet.ts.net/"), "abc"),
+            "https://vm.tailnet.ts.net/#pair=abc"
+        );
+    }
+
+    #[test]
+    fn pairing_url_falls_back_to_the_bind_address() {
+        let bind: SocketAddr = "127.0.0.1:7071".parse().unwrap();
+        assert_eq!(
+            pairing_url(&bind, None, "abc"),
+            "http://127.0.0.1:7071/#pair=abc"
+        );
+    }
+
+    #[test]
+    fn pairing_url_puts_the_token_in_the_fragment() {
+        // The property that keeps it out of access and proxy logs: everything
+        // before the '#' is what a server ever sees.
+        let bind: SocketAddr = "127.0.0.1:7071".parse().unwrap();
+        let url = pairing_url(&bind, Some("https://host"), "secret-token");
+        let (sent, fragment) = url.split_once('#').unwrap();
+        assert!(!sent.contains("secret-token"));
+        assert_eq!(fragment, "pair=secret-token");
+    }
+
+    #[test]
+    fn a_realistic_pairing_url_fits_in_a_qr_code() {
+        // A generated token is 64 hex characters, and a tailnet hostname is
+        // long. Encoding has to succeed for the real payload, not just a short
+        // one, or the code silently never prints.
+        let bind: SocketAddr = "127.0.0.1:7071".parse().unwrap();
+        let token = "a".repeat(64);
+        let url = pairing_url(&bind, Some("https://nocturn-vm.tail1234abcd.ts.net"), &token);
+        assert!(qrcode::QrCode::new(url.as_bytes()).is_ok(), "{url}");
     }
 
     #[test]
