@@ -43,6 +43,33 @@ try {
   });
   page.on('pageerror', (e) => consoleErrors.push(`uncaught: ${e.message}`));
 
+  // Counts the terminal sockets the client opens and how many it leaves open.
+  //
+  // A connection is a *view* onto a session, and the client must hold exactly
+  // one. Two views on one session both write the same bytes into the same
+  // xterm, so every line is drawn twice — most visibly as the prompt appearing
+  // twice on one line. The leak that caused it was invisible from the outside:
+  // the socket had no reference left, so nothing could close it, and it went
+  // on rendering until the tab was.
+  await page.evaluateOnNewDocument(() => {
+    const Native = window.WebSocket;
+    window.__terminalSockets = { opened: 0, live: 0 };
+    const Wrapped = function (url, protocols) {
+      const socket = new Native(url, protocols);
+      if (String(url).includes('/ws/terminal')) {
+        window.__terminalSockets.opened += 1;
+        window.__terminalSockets.live += 1;
+        socket.addEventListener('close', () => {
+          window.__terminalSockets.live -= 1;
+        });
+      }
+      return socket;
+    };
+    Wrapped.prototype = Native.prototype;
+    Object.assign(Wrapped, Native);
+    window.WebSocket = Wrapped;
+  });
+
   // Start from a fresh shell. Sessions survive client disconnects — that is
   // the product's central guarantee — so without this, every run inherits the
   // previous run's scrollback and whatever it left on the command line, and
@@ -89,6 +116,17 @@ try {
   check('terminal rendered shell output', promptText.trim().length > 0,
     `${promptText.trim().length} chars on screen`);
 
+  // --- exactly one view onto the session ---
+  const sockets = await page.evaluate(() => window.__terminalSockets);
+  check('the client holds exactly one terminal socket', sockets.live === 1,
+    `${sockets.opened} opened, ${sockets.live} still open`);
+  // The client must also not reach the prompt by way of a reconnect. Each one
+  // replays the whole scrollback, and the replay re-answers the cursor-position
+  // query the shell asked at startup — an escape sequence arriving unbidden at
+  // the shell's stdin, where the line editor eats it and the next key with it.
+  check('reaching the prompt takes one attach, not an attach and a correction',
+    sockets.opened === 1, `${sockets.opened} opened`);
+
   // --- activity badge ---
   // The daemon's IDLE_AFTER is 3s and the shell has been quiet for at least
   // the 4s above, so it should have settled at its prompt by now.
@@ -117,15 +155,33 @@ try {
     `${keys.length} keys`);
 
   // --- typing ---
+  // Read line by line rather than as one blob. Counting occurrences in the
+  // whole screen cannot tell a command that ran from one that failed: an
+  // unrecognised command is quoted back in the error text, so the token is
+  // still there twice while nothing has actually run.
+  const screenLines = () =>
+    page.$$eval('.xterm-rows > div', (els) =>
+      // xterm pads a row out with non-breaking spaces, so normalise
+      // whitespace before comparing rendered rows to what was typed.
+      els.map((el) => (el.textContent ?? '').replace(/\s/g, ' ').trimEnd()));
+
   await page.click('.terminal-host');
   await page.keyboard.type('echo NOCTURN_BROWSER_OK');
   await page.keyboard.press('Enter');
   await sleep(2500);
 
-  const afterTyping = await page.$eval('.xterm-screen', (el) => el.textContent ?? '');
-  check('typed command echoed and executed',
-    (afterTyping.match(/NOCTURN_BROWSER_OK/g) ?? []).length >= 2,
-    'expect both the echoed command and its output');
+  const typed = await screenLines();
+  check('typed command was echoed in full',
+    typed.some((l) => l.endsWith('echo NOCTURN_BROWSER_OK')),
+    'a dropped first keystroke leaves "cho NOCTURN_BROWSER_OK"');
+  check('typed command executed',
+    typed.some((l) => l.trim() === 'NOCTURN_BROWSER_OK'),
+    'expect the output on a line of its own');
+  // Two views on one session render every byte twice, so the prompt turns up
+  // twice on a line and so does everything else.
+  check('nothing is rendered twice',
+    typed.filter((l) => l.includes('NOCTURN_BROWSER_OK')).length === 2,
+    `${typed.filter((l) => l.includes('NOCTURN_BROWSER_OK')).length} lines mention it; expect the echo and the output`);
 
   await page.screenshot({ path: `${OUT}/03-after-command.png` });
 

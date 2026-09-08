@@ -88,7 +88,9 @@ function attach(session, holdMs, onOpen) {
     };
     ws.onerror = () => reject(new Error('websocket error'));
     ws.onopen = async () => {
-      if (onOpen) await onOpen(ws);
+      // `out` is passed too, so a check can mark a point in the stream and
+      // assert about what arrived after it.
+      if (onOpen) await onOpen(ws, out);
       setTimeout(() => ws.close(), holdMs);
     };
     ws.onclose = () => resolve(out);
@@ -216,6 +218,51 @@ async function main() {
       headers: { Authorization: `Bearer ${TOKEN}` },
     });
   }
+
+  // --- resize is a no-op when the geometry has not changed ---
+  //
+  // Clients re-send their geometry freely: on attach, and whenever a layout
+  // change leaves the character grid alone. ConPTY answers *any* resize by
+  // repainting its whole viewport, and those bytes are output like any other —
+  // they enter the scrollback every future reattach replays, and they reach
+  // every client already attached, redrawing a screen nobody touched. On a
+  // narrow terminal the repaint lands beside what is already on screen and the
+  // prompt appears twice on one line. So a resize to the size already in
+  // effect has to produce nothing at all.
+  const quiet = await attach('resize-noop', DIALECT.warmupMs + 2500, async (ws, out) => {
+    await sleep(DIALECT.warmupMs);
+    out.mark = out.text.length;
+    // The same 100x30 the harness attached with.
+    ws.send(JSON.stringify({ type: 'resize', cols: 100, rows: 30 }));
+    await sleep(1500);
+  });
+  const afterNoop = quiet.text.slice(quiet.mark);
+  check('a resize to the size already in effect emits nothing',
+    afterNoop.length === 0, `${afterNoop.length} bytes: ${JSON.stringify(afterNoop.slice(0, 120))}`);
+
+  // The guard must not swallow a real one, which is the whole point of sending
+  // geometry at all.
+  const reflowed = await attach('resize-noop', 2500, async (ws, out) => {
+    await sleep(500);
+    out.mark = out.text.length;
+    ws.send(JSON.stringify({ type: 'resize', cols: 70, rows: 30 }));
+    await sleep(1500);
+  });
+  check('a real resize still reaches the pty',
+    reflowed.text.slice(reflowed.mark).length > 0,
+    `${reflowed.text.slice(reflowed.mark).length} bytes`);
+
+  const resized = await fetch(`${BASE}/api/sessions`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+  }).then((r) => r.json());
+  const noopSession = resized.find((s) => s.id === 'resize-noop');
+  check('the session reports the new geometry', noopSession?.cols === 70,
+    `cols=${noopSession?.cols} rows=${noopSession?.rows}`);
+
+  await fetch(`${BASE}/api/sessions/resize-noop`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${TOKEN}` },
+  });
 
   // --- file API ---
   const auth = { Authorization: `Bearer ${TOKEN}` };

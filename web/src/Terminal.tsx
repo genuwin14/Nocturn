@@ -110,12 +110,14 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
     const hostRef = useRef<HTMLDivElement>(null);
     const termRef = useRef<XTerm | null>(null);
     const fitRef = useRef<FitAddon | null>(null);
+    // The live socket, for the two callers outside the connection effect:
+    // `send` and the geometry observer. The effect owns its own reference and
+    // only writes here when this still points at the socket it created, so a
+    // socket closing late cannot clear the handle of the one that replaced it.
     const socketRef = useRef<WebSocket | null>(null);
-    const attemptRef = useRef(0);
-    const timerRef = useRef<number | null>(null);
-    // Set when the component unmounts or the session changes, so an in-flight
-    // close handler does not resurrect a socket we deliberately abandoned.
-    const closedRef = useRef(false);
+    // Geometry last sent to the daemon, so an observation that leaves the
+    // character grid unchanged is not reported as a resize.
+    const sentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
 
     // Status is reported upward rather than rendered here; the header owns the
     // indicator so it stays visible on the Files tab too.
@@ -240,13 +242,22 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
     // --- connection ---------------------------------------------------------
 
     useEffect(() => {
-      closedRef.current = false;
-      attemptRef.current = 0;
+      // Every one of these is scoped to this effect run rather than held in a
+      // ref, because the run's teardown and its successor's setup are not the
+      // only things that touch them: a socket's `close` event arrives *after*
+      // the successor has started. A shared "closed" flag is already back to
+      // false by then, so the abandoned socket reads itself as live and
+      // schedules a reconnect — leaving two sockets attached to one session,
+      // both writing into the same terminal, and every byte drawn twice.
+      let cancelled = false;
+      let attempt = 0;
+      let timer: number | null = null;
+      let current: WebSocket | null = null;
 
       const connect = () => {
         const term = termRef.current;
         const fit = fitRef.current;
-        if (!term || !fit || closedRef.current) return;
+        if (!term || !fit || cancelled) return;
 
         // The server replays its scrollback on every attach. Clearing first
         // means a reconnect repaints the true remote state instead of appending
@@ -255,12 +266,26 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
 
         fit.fit();
         const socket = openTerminal(connection, session, term.cols, term.rows, root);
+        current = socket;
         socketRef.current = socket;
+        // The attach URL carries the geometry, so the daemon already has it and
+        // the observer has nothing to report until it actually changes.
+        sentSizeRef.current = { cols: term.cols, rows: term.rows };
 
         socket.onopen = () => {
-          attemptRef.current = 0;
+          attempt = 0;
           report('connected');
           term.focus();
+          // The URL carried the geometry as it was when the socket was created.
+          // If the layout moved during the handshake — a soft keyboard opening
+          // is enough — nothing else will tell the daemon, because the
+          // observation that would have done it fired while the socket was
+          // still connecting and had nowhere to send.
+          const sent = sentSizeRef.current;
+          if (!sent || sent.cols !== term.cols || sent.rows !== term.rows) {
+            sentSizeRef.current = { cols: term.cols, rows: term.rows };
+            socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+          }
         };
 
         socket.onmessage = (event) => {
@@ -296,8 +321,11 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
         };
 
         socket.onclose = (event) => {
-          socketRef.current = null;
-          if (closedRef.current) return;
+          // Only if the shared handle still points at *this* socket. A socket
+          // abandoned by an earlier run closes long after its replacement is
+          // live, and clearing the handle then would silently mute typing.
+          if (socketRef.current === socket) socketRef.current = null;
+          if (cancelled) return;
 
           // 1008 is the daemon rejecting the handshake, which in practice means
           // a bad token. Retrying cannot fix that, so stop and say so.
@@ -306,11 +334,10 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
             return;
           }
 
-          const attempt = attemptRef.current;
           const delay = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
-          attemptRef.current = attempt + 1;
+          attempt += 1;
           report('reconnecting', `retrying in ${Math.round(delay / 1000)}s`);
-          timerRef.current = window.setTimeout(connect, delay);
+          timer = window.setTimeout(connect, delay);
         };
       };
 
@@ -318,10 +345,18 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
       connect();
 
       return () => {
-        closedRef.current = true;
-        if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-        socketRef.current?.close();
-        socketRef.current = null;
+        cancelled = true;
+        if (timer !== null) window.clearTimeout(timer);
+        // Detached before closing, so the late `close` event cannot reconnect
+        // or touch the terminal that the next run is already writing into.
+        if (current) {
+          current.onopen = null;
+          current.onmessage = null;
+          current.onerror = null;
+          current.onclose = null;
+          if (socketRef.current === current) socketRef.current = null;
+          current.close();
+        }
       };
     }, [connection, session, root, report]);
 
@@ -370,9 +405,16 @@ export const TerminalView = forwardRef<TerminalHandle, Props>(
           return;
         }
         const socket = socketRef.current;
-        if (socket?.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-        }
+        if (socket?.readyState !== WebSocket.OPEN) return;
+
+        // Most observations change the pixel box without changing the character
+        // grid — a header growing a line, a scrollbar appearing. Reporting those
+        // is not free: ConPTY repaints its whole viewport on any resize, even to
+        // the size it already has, and those bytes reach every attached client.
+        const sent = sentSizeRef.current;
+        if (sent && sent.cols === term.cols && sent.rows === term.rows) return;
+        sentSizeRef.current = { cols: term.cols, rows: term.rows };
+        socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       };
 
       const observer = new ResizeObserver(applyFit);

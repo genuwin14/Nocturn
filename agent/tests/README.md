@@ -87,6 +87,14 @@ used for the confinement checks. Everything else is platform independent.
   settles to `waiting` carrying the question. The second is the one worth
   having — an agent stopped on a permission prompt is otherwise
   indistinguishable from one still thinking.
+- A resize to the geometry already in effect produces **no output at all**,
+  while a real one still reaches the PTY. Clients re-send their geometry
+  freely — on attach, and on any layout change that leaves the character grid
+  alone — and ConPTY answers *any* resize by repainting its whole viewport.
+  Those repaint bytes are output like any other: they enter the scrollback
+  every later reattach replays, and they reach every client already attached.
+  On a narrow terminal the repaint lands beside what is on screen and the
+  prompt appears twice on one line.
 - File list, read, and write round-trip.
 - Traversal is refused, and absolute paths are refused with 400 on every
   platform without leaking host file contents.

@@ -51,6 +51,16 @@ export default function App() {
   // no roots endpoint. Every call treats an absent root as "the default one",
   // so the app works either way rather than waiting on this.
   const [root, setRoot] = useState<string>();
+  // Whether the root question has been *answered*, which is not the same as
+  // `root` being set: undefined is a real answer, and the only one a daemon
+  // with no /api/roots can give. The terminal waits for it rather than
+  // attaching and correcting itself, because correcting itself means spawning
+  // a shell in the default root, abandoning it, and reattaching — and the
+  // reattach replays the scrollback, including the cursor-position query the
+  // shell asked at startup. Answering that a second time puts an escape
+  // sequence into the shell's stdin, where the line editor swallows it along
+  // with the next key you press.
+  const [rootResolved, setRootResolved] = useState(false);
   const [session, setSession] = useState('main');
   const [showSessions, setShowSessions] = useState(false);
   const [showDevices, setShowDevices] = useState(false);
@@ -102,6 +112,11 @@ export default function App() {
         // An older daemon has no /api/roots. Leaving the root unset makes every
         // request fall through to its single configured one, which is exactly
         // the behaviour that daemon has.
+      })
+      // Answered either way — with a name, or with "this daemon does not have
+      // them". Both are answers, and an answer is all the terminal waits for.
+      .finally(() => {
+        if (live) setRootResolved(true);
       });
     return () => {
       live = false;
@@ -191,17 +206,19 @@ export default function App() {
           reattaching re-replays the whole scrollback on every tab switch.
         */}
         <div className={`tab-panel ${tab === 'terminal' ? 'active' : ''}`}>
-          <TerminalView
-            ref={terminalRef}
-            connection={connection}
-            session={session}
-            root={root}
-            onStatusChange={onStatusChange}
-            onActivityChange={onActivityChange}
-            onSelectionChange={onSelectionChange}
-            ctrlArmed={ctrlArmed}
-            onCtrlConsumed={() => setCtrlArmed(false)}
-          />
+          {rootResolved && (
+            <TerminalView
+              ref={terminalRef}
+              connection={connection}
+              session={session}
+              root={root}
+              onStatusChange={onStatusChange}
+              onActivityChange={onActivityChange}
+              onSelectionChange={onSelectionChange}
+              ctrlArmed={ctrlArmed}
+              onCtrlConsumed={() => setCtrlArmed(false)}
+            />
+          )}
         </div>
         {/*
           Review and Files mount on demand and unmount when hidden, unlike the

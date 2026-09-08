@@ -432,8 +432,28 @@ impl Session {
         Ok(())
     }
 
+    /// Resizes the PTY, ignoring a resize to the size it already has.
+    ///
+    /// The no-op case is not hypothetical and not free. Every client sends its
+    /// geometry on attach, so a second device attaching, or the same one
+    /// reconnecting after a dropped socket, arrives with the size already in
+    /// effect. On Windows that still reaches `ResizePseudoConsole`, and ConPTY
+    /// answers *any* resize by repainting its entire viewport — cursor home,
+    /// every row rewritten, the cursor put back. Those bytes are output like
+    /// any other: they land in the scrollback that every future reattach
+    /// replays, and they go out to every client already attached, redrawing a
+    /// screen nobody touched. Dropping the no-op keeps the stream honest.
+    ///
+    /// The size lock is held across the PTY call so two clients resizing at
+    /// once cannot both decide they are the change. Nothing else takes the
+    /// master lock, so this is the only place the two are held together and
+    /// there is no ordering to get wrong.
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         if cols == 0 || rows == 0 {
+            return Ok(());
+        }
+        let mut size = self.size.lock().map_err(|_| anyhow!("size poisoned"))?;
+        if *size == (cols, rows) {
             return Ok(());
         }
         {
@@ -447,9 +467,7 @@ impl Session {
                 })
                 .map_err(|e| anyhow!("resize failed: {e}"))?;
         }
-        if let Ok(mut size) = self.size.lock() {
-            *size = (cols, rows);
-        }
+        *size = (cols, rows);
         Ok(())
     }
 
